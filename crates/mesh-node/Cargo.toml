@@ -1,0 +1,24 @@
+[package]
+name = "mesh-node"
+description = "SocialMesh node runtime: peer sessions, sync, propagation policy"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+mesh-crypto.workspace = true
+mesh-object.workspace = true
+mesh-store.workspace = true
+mesh-protocol.workspace = true
+mesh-transport.workspace = true
+mesh-discovery.workspace = true
+tokio.workspace = true
+rand.workspace = true
+anyhow.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+mesh-transport-tcp.workspace = true
+tempfile.workspace = true

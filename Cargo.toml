@@ -1,0 +1,36 @@
+[workspace]
+resolver = "2"
+members = ["crates/*", "transports/*", "apps/*"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.80"
+license = "MIT"
+repository = "https://github.com/doctarock/SocialMesh"
+
+[workspace.dependencies]
+mesh-crypto = { path = "crates/mesh-crypto" }
+mesh-object = { path = "crates/mesh-object" }
+mesh-store = { path = "crates/mesh-store" }
+mesh-protocol = { path = "crates/mesh-protocol" }
+mesh-transport = { path = "crates/mesh-transport" }
+mesh-node = { path = "crates/mesh-node" }
+mesh-discovery = { path = "crates/mesh-discovery" }
+mesh-transport-tcp = { path = "transports/mesh-transport-tcp" }
+mesh-transport-file = { path = "transports/mesh-transport-file" }
+
+anyhow = "1"
+thiserror = "2"
+blake3 = "1"
+ed25519-dalek = { version = "2", features = ["rand_core"] }
+rand = "0.8"
+hex = "0.4"
+rusqlite = { version = "0.32", features = ["bundled"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-util", "sync", "time", "signal"] }
+clap = { version = "4", features = ["derive", "env"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tempfile = "3"
+snow = "0.9"
+chacha20poly1305 = "0.10"

@@ -1,0 +1,13 @@
+[package]
+name = "mesh-object"
+description = "Canonical object encoding and verification for SocialMesh"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+mesh-crypto.workspace = true
+thiserror.workspace = true
+chacha20poly1305.workspace = true

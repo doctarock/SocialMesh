@@ -1,5 +1,63 @@
 # SocialMesh
 A decentralized messaging and social network protocol
+
+> **Status:** v0.1 reference implementation in Rust (MIT). All six milestones work, including attachments (sealed, fetched from several peers at once, verified per chunk; anonymous files travel the anonymity route).
+> Anonymous posts use stem/fluff routing so peers cannot tell who wrote them: [docs/ORIGIN-PRIVACY.md](docs/ORIGIN-PRIVACY.md).
+> All peer connections are encrypted (Noise, forward-secret); link observers still see who you connect to and when.
+> Not yet safe against state-level surveillance. Read [THREAT-MODEL.md](THREAT-MODEL.md).
+> Wire format: [SPEC.md](SPEC.md). Bluetooth / NFC / Wi-Fi Direct / audio roadmap: [docs/TRANSPORTS.md](docs/TRANSPORTS.md).
+
+## Quickstart
+
+```sh
+cargo build --release          # binary: target/release/mesh
+
+mesh init                      # create a local identity (no account, no email, no phone)
+mesh run                       # listen on :7842 and find nodes on your LAN automatically
+```
+
+Connecting across the Internet: share an invitation and have the other person add it.
+
+```sh
+mesh invite --addr your.public.host:7842     # prints mesh1:<identity>@your.public.host:7842
+mesh peer add mesh1:...                      # on their machine; the identity is pinned
+```
+
+Posting and reading:
+
+```sh
+mesh publish "Hello distributed world"
+mesh publish --anonymous "No author attached"
+mesh reply <id> "A reply"
+mesh reply --anonymous <id> "Same pseudonym within this thread only"
+mesh feed
+mesh object show <id>
+```
+
+Attachments (up to ~124 MiB; sealed with a random key in the post, stored by others as opaque 64 KiB pieces):
+
+```sh
+mesh publish "Photo from the rally" --attach rally.jpg
+mesh fetch <id>                # queue download; `mesh run` fetches chunks from any peers that have them
+mesh save <id> rally.jpg       # reassemble, verify the whole-file hash, write
+mesh publish "Leaked briefing" --anonymous --attach memo.pdf   # file travels the anonymity route with the post (≤16 MiB)
+```
+
+Photos (JPEG/PNG/WebP) are stripped of EXIF/GPS, XMP and comments automatically. PDFs, video and other
+types that can't be cleaned are refused unless you add `--keep-metadata`. Export a clean copy instead.
+
+`mesh run` sends a little decoy traffic (`--cover-mib-per-hour`, default 16) so your real anonymous uploads
+don't stand out, and caps what it keeps for others (`--cache-mib`, default 2048).
+
+No network at all — move posts by USB stick, SD card or file share:
+
+```sh
+mesh export posts.bundle
+mesh import posts.bundle
+```
+
+Use `--home <dir>` (or `MESH_HOME`) to run several nodes on one machine. `mesh run --no-beacon` listens for nearby nodes without announcing yourself.
+
 # Distributed Social Protocol v0.1
 
 ## 1. Purpose

@@ -1,0 +1,350 @@
+# SocialMesh Wire Specification v0.1
+
+This document pins down every choice that affects interoperability. A second
+implementation that follows it byte-for-byte must produce identical object IDs
+and be able to talk to the reference implementation. The design rationale lives
+in README.md; this file is normative.
+
+Conventions: all integers are **big-endian**. `str` / `bytes` are a `u32`
+length followed by that many bytes (`str` must be UTF-8). `opt<T>` is a byte
+`0x00` (absent) or `0x01` followed by `T`; any other flag value is invalid.
+Decoders MUST reject trailing bytes, and any field over its limit.
+
+## 1. Primitives
+
+| Purpose | Choice |
+|---|---|
+| Signatures | Ed25519 (RFC 8032), verified with *strict* verification |
+| Hash | BLAKE3-256 |
+| Randomness | OS CSPRNG |
+
+### 1.1 Digest
+
+```
+digest = u8 alg || 32 bytes        (33 bytes)
+alg 0x01 = BLAKE3-256. Any other value MUST be rejected in v0.1.
+```
+
+Text form: lowercase hex of all 33 bytes (66 chars). The UI may show a short
+form (first 4 digest bytes after `alg`, uppercase); short forms are never used
+on the wire.
+
+### 1.2 Identity ID
+
+```
+identity_id = 0x01 || BLAKE3.derive_key("socialmesh v1 identity id", public_key[32])
+```
+
+### 1.3 Signing input (domain separation)
+
+```
+signing_input(context, payload) = UTF8(context) || 0x00 || payload
+```
+
+### 1.4 Thread-scoped anonymous key (README §8)
+
+```
+seed = BLAKE3.derive_key("socialmesh v1 thread anonymous key",
+                         anonymous_secret[32] || root_thread_id[33])
+keypair = Ed25519 keypair from seed
+```
+
+`anonymous_secret` is a 32-byte random value that never leaves the device.
+`root_thread_id` is the ID of the topmost known ancestor.
+
+## 2. Limits
+
+| Item | Limit |
+|---|---|
+| Encoded object | 262 144 bytes |
+| `kind` | 1–64 bytes, `[a-z0-9._-]` |
+| media type | 1–127 printable ASCII, must contain `/` |
+| `body` | 65 536 bytes |
+| attachments | 64 |
+| Wire frame | 263 168 bytes |
+| IDs per HAVE/WANT/BLOB_WANT/BLOB_MISSING | 1 024 |
+| Attachment | 1 – 129 926 160 bytes (1 983 chunks) |
+| Blob (sealed manifest or chunk) | exactly 65 536 bytes |
+| Anonymous object's attachments, total | 16 MiB (node policy, SHOULD) |
+
+## 3. Object encoding
+
+```
+unsigned =
+    "SMSH"                    4 bytes magic
+    u8   format_version       = 1
+    str  kind                 e.g. "post"
+    u64  created_ms           Unix time, milliseconds (author's claim; not trusted)
+    opt< [32] public_key >    author; absent = ownerless
+    opt< digest >             parent
+    str  body_type            "text/plain" | "text/markdown" | other media type
+    str  body
+    u16  attachment_count
+    attachment_count × ( digest manifest || [32] key || str media_type || u64 size )
+
+object   = unsigned || opt< [64] signature >
+
+signature = Ed25519.sign(author_key, signing_input("socialmesh v1 object", unsigned))
+ObjectID  = 0x01 || BLAKE3(object)
+```
+
+Rules:
+
+- `signature` is present **iff** `author` is present.
+- A receiver MUST verify the signature, MUST reject non-canonical encodings
+  (re-encoding the decoded object must reproduce the input exactly), and MUST
+  verify `ObjectID` against the ID it requested.
+- Ed25519 signing is deterministic, so identical content + key + timestamp
+  produce an identical ID.
+
+## 4. Attachments: sealed blobs
+
+A file is encrypted when it is attached, under a fresh random 32-byte `key`
+that appears only in the post. The result is a set of **blobs**, every one
+exactly 65 536 bytes of ciphertext, named by its digest:
+
+```
+AEAD      = ChaCha20-Poly1305 (RFC 8439), associated data "socialmesh v1 blob"
+nonce(k,i)= u8 k || 0x000000 || u64 i         (12 bytes)
+P         = 65 520                             (plaintext per blob)
+
+chunk i      : file bytes [i·P, min((i+1)·P, size)), zero-padded to P
+chunk blob i = AEAD.seal(key, nonce(0x02, i), chunk i)
+chunk ID i   = 0x01 || BLAKE3(chunk blob i)
+
+manifest plaintext =
+    "SMMF"              magic
+    u8   version        = 1
+    u64  size           file size, 1 … 129 926 160
+    digest content      BLAKE3 of the complete plaintext file
+    u32  n              = ceil(size / P)   (≤ 1 983)
+    n × digest          chunk IDs in file order
+    zero padding to P bytes
+manifest blob = AEAD.seal(key, nonce(0x01, 0), manifest plaintext)
+manifest ID   = 0x01 || BLAKE3(manifest blob)
+```
+
+The attachment entry in the post is `manifest ID || key || media_type ||
+size`.
+
+Rules:
+
+- `key` MUST be random (OS CSPRNG) and MUST NOT be reused. It MUST NOT be
+  derived from the file: content-derived keys let anyone holding a known file
+  test whether a node has cached it.
+- Every blob is the same size and opaque, so a node holding blobs cannot
+  tell a manifest from a chunk, which blobs belong together, or what any of
+  them contain, without the post.
+- A blob is named only by hashing what arrived. A node accepts a blob only if
+  its hash is one it is fetching (or it is a STASH, §5.5).
+- On open, the receiver MUST reject: a blob that fails AEAD authentication, a
+  manifest with wrong magic/version, `size` out of range or different from the
+  post's `size`, `n ≠ ceil(size / P)`, or non-zero padding in the manifest or
+  in any chunk.
+- After all chunks are present the receiver MUST check that the decrypted
+  file hashes to `content`.
+- File names are not part of the protocol.
+
+## 5. Peer protocol
+
+### 5.0 Secure channel
+
+Every connection, on every stream transport, starts with a Noise handshake.
+Nothing travels in the clear after the first two handshake messages.
+
+```
+Noise protocol: Noise_NN_25519_ChaChaPoly_BLAKE2s
+Prologue:       "socialmesh v1"
+Initiator:      the side that dialled
+
+handshake message = u16 length || noise_message      (payloads empty)
+  -> e
+  <- e, ee
+```
+
+`binding` = the Noise handshake hash (32 bytes) once the handshake completes.
+It is unique to the connection and is signed in HELLO (§5.3).
+
+After the handshake, each direction is a sequence of records:
+
+```
+record    = u16 ciphertext_len || ciphertext          (ciphertext_len ≥ 18)
+plaintext = u16 data_len || data || padding
+```
+
+- Encryption uses the Noise transport cipher with an implicit nonce counter
+  per direction, starting at 0 and incremented per record.
+- Senders pad each plaintext with zeros to a multiple of 256 bytes, capped at
+  65 519. Receivers MUST ignore padding contents.
+- `data` from successive records is concatenated into a byte stream that
+  carries the frames of §5.1. Record boundaries carry no meaning.
+- A record that fails to decrypt, or whose `data_len` exceeds the record, MUST
+  close the connection.
+
+Noise `NN` authenticates no one by itself. Identity comes from HELLO, which is
+bound to `binding`.
+
+### 5.1 Framing
+
+```
+frame = u32 length || message      (length ≤ 263 168, checked before allocation)
+```
+
+### 5.2 Messages
+
+| Tag | Name | Fields |
+|---|---|---|
+| `0x01` | HELLO | `u16 protocol(=1)`, `u8 flags`, `[32] public_key`, `[64] signature` |
+| `0x10` | HAVE | `u16 n`, `n × digest` |
+| `0x11` | WANT | `u16 n`, `n × digest` |
+| `0x12` | OBJECT | `bytes object` |
+| `0x13` | STEM | `bytes object` |
+| `0x14` | STASH | `bytes blob` |
+| `0x20` | BLOB_WANT | `u16 n`, `n × digest` |
+| `0x21` | BLOB | `bytes blob` |
+| `0x22` | BLOB_MISSING | `u16 n`, `n × digest` |
+| `0x30` | PAD | `bytes` (≤ 4 096), ignored by the receiver |
+
+HELLO flags: bit `0x01` = accepts STEM (node relays for others). Other bits
+are reserved and MUST be sent as zero.
+
+Tag `0x02` is reserved (AUTH in early drafts) and MUST NOT be sent. Unknown
+tags are a protocol error.
+
+### 5.3 Session
+
+1. Establish the secure channel (§5.0). All further messages travel inside it.
+2. The **responder** sends HELLO first. Its signature is
+   ```
+   sign(signing_input("socialmesh v1 handshake",
+        binding[32] || role u8 || protocol u16 || flags u8 || public_key[32]))
+   ```
+   with `role` = `0x02` for the responder and `0x01` for the initiator.
+3. The initiator verifies the responder's HELLO. A bad signature, a different
+   protocol version, our own key, or (if the initiator pinned an identity, e.g.
+   from an invitation) a different identity closes the connection **before the
+   initiator sends anything**, so it never reveals its identity to an impostor.
+4. Otherwise the initiator sends its own HELLO, signed the same way, and the
+   responder verifies it.
+
+   A node MAY close after step 3 to learn a peer's identity without disclosing
+   its own (the reference CLI does this in `mesh peer add`).
+5. After the handshake each side sends HAVE for every object it is willing to
+   share, then HAVE for newly retained objects as they arrive.
+6. On HAVE, request unknown objects with WANT (bounded outstanding requests).
+7. On WANT, reply with OBJECT for each requested object the node is willing to share.
+8. OBJECT that was not requested on this connection is discarded.
+
+A second HELLO is a protocol error.
+
+### 5.4 Propagation policy
+
+A node always offers objects authored locally. It offers objects received from
+peers or imported from bundles only when relaying is enabled. Offering an
+object is transport, not endorsement (README §17).
+
+### 5.4.1 Attachment transfer
+
+Attachments are pulled on demand, never announced in HAVE.
+
+- On BLOB_WANT, a node sends BLOB for each requested blob it holds and is
+  willing to share, and lists the rest in one BLOB_MISSING. A node always
+  shares blobs of files it attached to its own *signed* posts; all other
+  blobs (fetched, stashed, or attached to its own anonymous posts) only when
+  relaying. A node SHOULD answer BLOB_MISSING rather than delay when busy.
+- A BLOB whose hash is not part of an attachment the receiver is fetching is
+  unsolicited: it is discarded and counts against the sender.
+- Requests are independent. A receiver MAY ask different peers for different
+  blobs at once, in any order, and MAY ask again elsewhere after BLOB_MISSING
+  or a timeout.
+- Senders SHOULD send queued control messages (HAVE, WANT, BLOB_WANT,
+  BLOB_MISSING, STEM without attachments) before queued OBJECT/BLOB/STASH data.
+- A node SHOULD NOT record which peer a blob came from or when.
+
+### 5.5 Anonymity routing (stem / fluff)
+
+Normative rules; rationale in docs/ORIGIN-PRIVACY.md.
+
+- Anonymous objects (ownerless, or signed with a thread-scoped key) are NOT
+  announced by their author. The author sends them as STEM to one successor
+  that advertised `FLAG_ACCEPTS_STEM`. If no such peer exists, the author
+  waits; it MUST NOT fall back to HAVE.
+- A node holding an object in the stem phase ("embargoed") MUST NOT include it
+  in HAVE and MUST NOT serve it in response to WANT.
+- On receiving STEM for an unknown object, a relaying node verifies it, stores
+  it embargoed, then with probability `p` (default 0.1) **fluffs** it (lifts the
+  embargo and sends HAVE to all peers). Otherwise it forwards STEM to its
+  successor, excluding the sender; with no successor, it fluffs.
+- The author never fluffs at its own hop.
+- STEM for an object already held ends the stem: if still embargoed, fluff.
+- Each node keeps one successor per epoch (default 10 minutes).
+- Each holder sets a random embargo timer (default 20–50 s) and fluffs on expiry.
+- On seeing HAVE for an object it holds under embargo, a node lifts the
+  embargo without an immediate announcement and announces it on its normal
+  schedule.
+- A node that does not relay MUST NOT set `FLAG_ACCEPTS_STEM`, and MAY treat
+  STEM as a protocol violation.
+- Anonymous objects SHOULD round `created_ms` down to a whole minute.
+- **Attachments ride the stem.** Before sending STEM for an object with
+  attachments, a node sends every blob of those attachments as STASH, in
+  order, on the same ordered queue, then the STEM. The successor therefore
+  holds the whole file before it learns which post it belongs to, and every
+  hop on the route ends up holding it. The author follows the same rule.
+- A node that does not hold every blob of a stem object's attachments MUST NOT
+  forward it as STEM; it fluffs instead (upstream holders serve the rest).
+- STASH is accepted only by relaying nodes, only as a 65 536-byte blob, and
+  rate-limited per peer (default 1 024 per minute). It is stored like any
+  other cached blob.
+- The author stores the sealed blobs of its own anonymous attachments exactly
+  as it would stashed ones (no "own" marker).
+- STASH pieces SHOULD be paced: a random gap (default 20–120 ms) before each
+  piece, the same for authors, relays and cover traffic.
+- A node SHOULD start an object's fallback embargo timer only after it has
+  queued the STEM, and SHOULD extend it by about four times the time it spent
+  pushing the object's pieces (later hops take as long again). An author whose
+  push fails MUST requeue the object for another route, not fluff it.
+
+### 5.6 Cover traffic
+
+To hide real STASH runs from link observers, a node SHOULD send decoy runs to
+relaying peers: STASH pieces of 65 536 random bytes (indistinguishable from
+sealed blobs), paced as in §5.5, followed by one PAD (as a real run is
+followed by a STEM). Run lengths SHOULD be log-uniform from 1 to the largest
+real anonymous send (257 pieces by default), at exponentially distributed
+intervals that average a configured rate (reference default: 16 MiB/hour).
+
+Receivers can't tell decoys from real pieces and store them as cache. A node
+SHOULD bound its cache and evict, in order: pieces no known attachment refers
+to (oldest first), then whole cached attachments (least recently requested
+first, skipping recent ones that may still be on a stem route). Blobs of the
+node's own signed posts are never evicted.
+
+## 6. Offline bundle
+
+```
+"SMBUNDLE" || u8 version(=1) || u32 count || count × ( u32 len || object )
+```
+
+Each object is verified exactly as if it had arrived over the network. An
+invalid entry is skipped, not fatal.
+
+## 7. Discovery
+
+### 7.1 LAN beacon (UDP port 7843, broadcast)
+
+```
+"SMDISC" || u8 version(=1) || [16] instance || u16 port      (25 bytes)
+```
+
+`instance` is random per run and used only to ignore one's own beacons. The
+beacon **does not contain an identity**. A sighting is a hint to dial
+`source_ip:port`; identity is established by the handshake.
+
+### 7.2 Invitation
+
+```
+mesh1:<identity-id hex>[@addr[,addr...]]
+```
+
+Parsers accept the string embedded in a longer URL (`https://…#mesh1:…`).
+Addresses are hints; the identity is pinned during the handshake.

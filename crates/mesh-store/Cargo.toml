@@ -1,0 +1,17 @@
+[package]
+name = "mesh-store"
+description = "Content-addressed object store and SQLite index for SocialMesh"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+mesh-crypto.workspace = true
+mesh-object.workspace = true
+rusqlite.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

@@ -1,0 +1,17 @@
+[package]
+name = "mesh-transport-file"
+description = "Offline bundle import/export for SocialMesh"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+mesh-object.workspace = true
+mesh-store.workspace = true
+anyhow.workspace = true
+
+[dev-dependencies]
+mesh-crypto.workspace = true
+tempfile.workspace = true

@@ -1,0 +1,15 @@
+[package]
+name = "mesh-crypto"
+description = "Identities, signatures and content hashes for SocialMesh"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+blake3.workspace = true
+ed25519-dalek.workspace = true
+rand.workspace = true
+hex.workspace = true
+thiserror.workspace = true

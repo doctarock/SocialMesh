@@ -1,0 +1,27 @@
+[package]
+name = "mesh-cli"
+description = "Command-line client for SocialMesh"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "mesh"
+path = "src/main.rs"
+
+[dependencies]
+mesh-crypto.workspace = true
+mesh-object.workspace = true
+mesh-store.workspace = true
+mesh-node.workspace = true
+mesh-transport.workspace = true
+mesh-discovery.workspace = true
+mesh-transport-tcp.workspace = true
+mesh-transport-file.workspace = true
+tokio.workspace = true
+clap.workspace = true
+anyhow.workspace = true
+tracing-subscriber.workspace = true
+hex.workspace = true

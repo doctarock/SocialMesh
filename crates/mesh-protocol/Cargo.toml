@@ -1,0 +1,15 @@
+[package]
+name = "mesh-protocol"
+description = "Peer wire protocol (framing, messages, handshake) for SocialMesh"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+mesh-crypto.workspace = true
+mesh-object.workspace = true
+tokio.workspace = true
+thiserror.workspace = true
+snow.workspace = true
