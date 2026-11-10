@@ -298,12 +298,19 @@ Attachments are pulled on demand, never announced in HAVE.
   BLOB_MISSING, STEM without attachments) before queued OBJECT/BLOB/STASH data.
 - A node SHOULD NOT record which peer a blob came from or when.
 
-### 5.5 Anonymity routing (stem / fluff)
+### 5.5 Private-origin routing (stem / fluff)
 
 Normative rules; rationale in docs/ORIGIN-PRIVACY.md.
 
-- Anonymous objects (ownerless, or signed with a thread-scoped key) are NOT
-  announced by their author. The author sends them as STEM to one successor
+- **Private-origin objects** are NOT announced by their author. These are
+  anonymous objects (ownerless, or signed with a thread-scoped key) and signed
+  objects whose author doesn't want the device known as theirs. The signature
+  still says who wrote a signed post; the route hides which device it came
+  from. (The reference client sends signed posts this way by default;
+  `--direct` opts out.)
+- The author SHOULD hold a new private-origin object for a random time before
+  sending it (reference: 2–30 s).
+- Routing: The author sends them as STEM to one successor
   that advertised `FLAG_ACCEPTS_STEM`. If no such peer exists, the author
   waits; it MUST NOT fall back to HAVE.
 - A node holding an object in the stem phase ("embargoed") MUST NOT include it
@@ -321,7 +328,9 @@ Normative rules; rationale in docs/ORIGIN-PRIVACY.md.
   schedule.
 - A node that does not relay MUST NOT set `FLAG_ACCEPTS_STEM`, and MAY treat
   STEM as a protocol violation.
-- Anonymous objects SHOULD round `created_ms` down to a whole minute.
+- Private-origin objects SHOULD round `created_ms` down to a whole minute.
+- Their attachments are stored by the author exactly like stashed ones
+  (cache, no "own" marker), and the anonymous size limit applies.
 - **Attachments ride the stem.** Before sending STEM for an object with
   attachments, a node hands every blob of those attachments to the successor
   as STASH, spread over all of its links to the successor (§5.3.1), then sends
@@ -347,6 +356,15 @@ Normative rules; rationale in docs/ORIGIN-PRIVACY.md.
   push fails MUST requeue the object for another route, not fluff it.
 
 ### 5.6 Cover traffic
+
+**Single messages.** A STEM leaving its author is a message nothing on the
+link triggered (a relay's STEM follows one it received). To hide that, a node
+SHOULD send single decoy PADs, sized like posts (log-uniform 200–4 096
+bytes), on the control queue of a random relaying peer at exponentially
+distributed intervals (reference: 60 per hour, a few KB). Keepalive PADs
+(§5.0.1) SHOULD be jittered so they don't form a steady beat.
+
+**Runs.**
 
 To hide real STASH runs from link observers, a node SHOULD send decoy runs to
 relaying peers: STASH pieces of 65 536 random bytes (indistinguishable from

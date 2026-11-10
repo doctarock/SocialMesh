@@ -53,6 +53,16 @@ requester guesses the ID.
 10 hops on average), the relay ends the stem and announces the object
 normally. From then on the object spreads like any other.
 
+### Signed posts take the same route
+
+The route isn't only for anonymous posts. A signed post says who wrote it,
+but if it is announced from the author's phone, anyone nearby learns which
+phone is X's: the post appears there before anywhere else. So the reference
+client sends signed posts the private way too, by default: same author delay,
+same coarse timestamp, same cache storage for files, public from a relay.
+`--direct` announces straight from the device, for accounts that don't need
+this (an organisation's official feed) or files over the 16 MiB route limit.
+
 ### Rules that make author and relay indistinguishable
 
 1. **Identical storage.** Authored-anonymous and relayed-stem objects are both

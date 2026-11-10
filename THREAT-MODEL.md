@@ -57,13 +57,15 @@ mesh: once fluffed, every post is public to every node. Specifically:
   device pseudonym, not the owner's posting identity. A stable link key (for
   invitations) lets peers recognise the same device over time; a rotating one
   limits that to a day or one network.
-- **Who first offers a signed post.** A signed post is announced first by its
-  author's device. A peer connected to that device (anyone nearby, for a
-  phone) sees the link key offer a new post signed by X before anyone else
-  has it, and can conclude "this device is X". Link keys stop the handshake
-  from saying so outright; they don't stop this. Posting anonymously, or
-  sending signed posts through the stem route (not yet built for signed
-  posts), avoids it.
+- **Who first offers a `--direct` post.** Signed posts take the private route
+  by default and become public from a relay, not the author's device. With
+  `--direct` the author's device announces the post itself. A peer connected
+  to it (anyone nearby, for a phone) then sees a new post signed by X appear
+  from that device first, and can conclude "this device is X".
+- **A signed identity's own history.** The private route hides which device
+  posted, not who: everything signed by X is linkable to X by design. Someone
+  who already knows a device belongs to X learns nothing new; someone
+  watching a device can't use X's posts to confirm it is X's.
 - **An unpinned dialler's identity.** It is revealed to whichever node answers,
   once that node has proved *some* identity. Pinned dials and LAN sightings
   with an identity hint are protected; plain addresses are not.
@@ -162,7 +164,7 @@ HTML or script is ever executed.
 
 1. Passphrase-protected keys at rest.
 2. Clock sanity policy for `created_ms` (currently the author's unverified claim).
-3. Optional stem routing for signed posts, so the author's device isn't the first to offer them.
+3. Cover for receiving: a device fetching a file right after it's posted can hint at interest.
 4. Independent security review of the secure channel, handshake and object format.
 5. Traffic obfuscation or an onion transport where running SocialMesh is itself risky.
 6. Metadata stripping for PDF and video; adaptive cover rates for phones on metered data.

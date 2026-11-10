@@ -187,6 +187,8 @@ async fn start_with_sighting(sighting: mesh_discovery::Sighting) -> TestNode {
         dial_interval: Duration::from_millis(200),
         announce_interval: Duration::from_millis(50),
         cover_bytes_per_hour: 0, // deterministic tests; cover has its own test
+        cover_messages_per_hour: 0,
+        author_delay: (Duration::ZERO, Duration::ZERO),
         ..Config::default()
     };
     let node = Node::new(Keypair::from_seed(&seed), store, Arc::new(TcpTransport), config);
@@ -237,6 +239,8 @@ fn test_config() -> Config {
         dial_interval: Duration::from_millis(200),
         announce_interval: Duration::from_millis(50),
         cover_bytes_per_hour: 0, // deterministic tests; cover has its own test
+        cover_messages_per_hour: 0,
+        author_delay: (Duration::ZERO, Duration::ZERO),
         ..Config::default()
     }
 }
@@ -1029,4 +1033,79 @@ async fn rotating_the_link_key_reconnects_as_a_stranger() {
     let obj = create(Content::post("still me"), Author::Signed(&author)).unwrap();
     b.node.publish(&obj).unwrap();
     a.expect_object(obj.id()).await;
+}
+
+// ---- Private origin for signed posts ----
+
+#[tokio::test]
+async fn signed_post_with_file_goes_public_from_a_relay_not_its_author() {
+    // A — B — C. B always fluffs. A signs the post, but sends it the private way.
+    let mut b = TestNode::start_with(Config { stem_fluff_probability: 1.0, ..test_config() }, &[]).await;
+    let mut a = TestNode::start(true, &[&b]).await;
+    let mut c = TestNode::start(true, &[&b]).await;
+    b.wait_connected(2).await;
+
+    let author = Keypair::generate(); // posting identity: not A's link key
+    assert_ne!(author.public().id(), a.id());
+    let photo = test_file(200_000, 31);
+    let w = a.node.with_store(|s| s.add_file(&photo, BlobSource::Cache)).unwrap();
+    let obj = create(Content::post("signed, from somewhere").attach(attachment(&w)), Author::Signed(&author)).unwrap();
+    a.node.publish_private(&obj).unwrap();
+
+    // C gets it, with a valid signature by the author, from B.
+    let got = c.expect_object(obj.id()).await;
+    assert_eq!(got.object().author.unwrap().id(), author.public().id());
+    let b_events = drain(&mut b.events, Duration::from_millis(300)).await;
+    assert!(b_events.iter().any(|e| matches!(e, Event::Fluffed(id) if *id == obj.id())), "B made it public");
+    c.node.fetch_attachments(&got).unwrap();
+    c.expect_attachment(w.manifest).await;
+    assert_eq!(c.read_attachment(obj.id()), photo);
+
+    // A never announced it, and holds it exactly as a relay would.
+    let a_events = drain(&mut a.events, Duration::from_millis(300)).await;
+    assert!(!a_events.iter().any(|e| matches!(e, Event::Fluffed(id) if *id == obj.id())), "author must not fluff");
+    a.node.with_store(|s| {
+        assert_eq!(s.origin(&obj.id()).unwrap(), Some(mesh_store::Origin::Stem));
+        for id in s.attachment_blobs(&w).unwrap() {
+            assert_eq!(s.blob_source(&id).unwrap(), Some(BlobSource::Cache));
+        }
+    });
+}
+
+#[tokio::test]
+async fn author_holds_a_new_post_for_a_random_delay() {
+    let mut b = TestNode::start_with(Config { stem_fluff_probability: 1.0, ..test_config() }, &[]).await;
+    let a = TestNode::start_with(
+        Config { author_delay: (Duration::from_millis(1200), Duration::from_millis(1200)), ..test_config() },
+        &[&b],
+    )
+    .await;
+    b.wait_connected(1).await;
+    let obj = create(Content::post("not yet"), Author::Ownerless).unwrap();
+    a.node.publish_private(&obj).unwrap();
+
+    tokio::time::sleep(Duration::from_millis(600)).await;
+    assert!(!b.node.with_store(|s| s.has(&obj.id()).unwrap()), "left before the author delay");
+    b.expect_object(obj.id()).await;
+}
+
+#[tokio::test]
+async fn decoy_messages_flow_to_relaying_peers() {
+    use mesh_protocol::{read_message, Message};
+    // Keepalives effectively off, decoys about every 100 ms.
+    let a = TestNode::start_with(
+        Config { cover_messages_per_hour: 36_000, keepalive: Duration::from_secs(60), ..test_config() },
+        &[],
+    )
+    .await;
+    let (mut rd, _wr) = raw_link(a.addr(), &Keypair::generate()).await;
+    let mut pads = 0;
+    let deadline = tokio::time::Instant::now() + Duration::from_millis(1500);
+    while let Ok(Ok(Some(m))) = tokio::time::timeout_at(deadline, read_message(&mut rd)).await {
+        if let Message::Pad(p) = m {
+            assert!((200..=4096).contains(&p.len()), "post-sized: {}", p.len());
+            pads += 1;
+        }
+    }
+    assert!(pads >= 4, "only {pads} decoys");
 }

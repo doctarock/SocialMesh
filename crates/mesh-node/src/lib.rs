@@ -12,7 +12,8 @@
 //! receive → validate (`VerifiedObject::decode`) → retain (`Store::put`) →
 //! propagate (`Config::relay` + origin) → display (the application's job).
 //!
-//! Anonymous objects take a different first leg (docs/ORIGIN-PRIVACY.md):
+//! Anonymous objects, and signed objects whose author doesn't want this
+//! device known as theirs, take a different first leg (docs/ORIGIN-PRIVACY.md):
 //!
 //! ```text
 //! author ── STEM ─► relay ── STEM ─► relay ──(coin flip)── fluff: HAVE to everyone
@@ -126,6 +127,14 @@ pub struct Config {
     pub cover_bytes_per_hour: u64,
     /// Longest decoy run, in pieces. Matches the largest real anonymous send.
     pub cover_max_run: usize,
+    /// Decoy single messages per hour, sized like a post, sent at random
+    /// times to relaying peers. A real STEM leaving the author's device is a
+    /// message that nothing triggered; these make every node send such
+    /// messages all the time. 0 disables. A few KB per hour.
+    pub cover_messages_per_hour: u32,
+    /// The author holds a new private-origin post for a random time in this
+    /// range before sending it, so it doesn't leave the moment it is written.
+    pub author_delay: (Duration, Duration),
     /// Most bytes of cached blobs to keep (cover traffic, relayed files).
     /// Blobs of our own signed posts don't count and are never evicted.
     pub cache_budget: u64,
@@ -162,6 +171,8 @@ impl Default for Config {
             stash_pace: (Duration::from_millis(20), Duration::from_millis(120)),
             cover_bytes_per_hour: 16 * 1024 * 1024,
             cover_max_run: 16 * 1024 * 1024 / BLOB_SIZE + 1,
+            cover_messages_per_hour: 60,
+            author_delay: (Duration::from_secs(2), Duration::from_secs(30)),
             cache_budget: 2 * 1024 * 1024 * 1024,
             auto_fetch_max: 16 * 1024 * 1024,
         }
@@ -359,13 +370,21 @@ impl Node {
         Ok(self.with_store(|s| s.put(obj, &Origin::Local))?)
     }
 
-    /// Queue a locally authored anonymous object for stem routing. It is not
-    /// announced by this node; it is stored exactly like one relayed for others.
+    /// Queue a locally authored object for stem routing: it becomes public
+    /// from a relay a few hops away, not from this device. Works for anonymous
+    /// objects and for signed ones (the signature says who wrote it; this hides
+    /// which device they wrote it on). It is not announced by this node and is
+    /// stored exactly like one relayed for others.
     ///
     /// Attachments must already be sealed into the store as
     /// [`BlobSource::Cache`] (`Store::add_file`). Every stem hop pushes the
     /// sealed blobs to the next hop before the object, so by the time the post
     /// is public the file is held all along the route, not only by the author.
+    pub fn publish_private(&self, obj: &VerifiedObject) -> Result<bool> {
+        self.publish_anonymous(obj)
+    }
+
+    /// Same as [`Node::publish_private`].
     pub fn publish_anonymous(&self, obj: &VerifiedObject) -> Result<bool> {
         let total: u64 = obj.object().attachments.iter().map(|a| a.size).sum();
         if total > self.inner.config.max_anonymous_attachments {
@@ -379,7 +398,7 @@ impl Node {
                 let blobs = s.attachment_blobs(&a.into()).context("attachment is not sealed into this store")?;
                 for b in blobs {
                     if s.blob_source(&b)? != Some(BlobSource::Cache) {
-                        bail!("anonymous attachments must be stored as cache, not own: that would mark this node as the author");
+                        bail!("private-origin attachments must be stored as cache, not own: that would mark this node as the author");
                     }
                 }
             }
@@ -480,6 +499,7 @@ impl Node {
         tasks.spawn(stem_pump(self.inner.clone()));
         tasks.spawn(fetch::pump(self.inner.clone()));
         tasks.spawn(cover_pump(self.inner.clone()));
+        tasks.spawn(chatter_pump(self.inner.clone()));
         tasks.spawn(cache_pump(self.inner.clone()));
         if let Some(every) = self.inner.config.link_key_rotation {
             let inner = self.inner.clone();
@@ -679,7 +699,9 @@ async fn run_connection(
                 biased;
                 m = rx.recv() => m,
                 m = bulk_rx.recv() => m,
-                _ = tokio::time::sleep(keepalive) => Some(keepalive_pad()),
+                // Jittered, so keepalives aren't a steady beat that a real
+                // message stands out against.
+                _ = tokio::time::sleep(keepalive.mul_f64(rand::random::<f64>() + 0.5)) => Some(keepalive_pad()),
             };
             let Some(m) = m else { break };
             if write_message(&mut wr, &m).await.is_err() {
@@ -1236,16 +1258,27 @@ async fn await_pieces(inner: &Arc<Inner>, obj: &VerifiedObject) {
     let started = Instant::now();
     let mut seen = inner.stash_received.load(Ordering::Relaxed);
     let mut last_progress = Instant::now();
+    let mut last_check = Instant::now();
+    // The last pieces may have landed before we started counting, so check
+    // now, then whenever a piece arrives, and at least once a second.
+    if holds_all_pieces(inner, obj) {
+        return;
+    }
     while !*inner.shutdown.borrow() && started.elapsed() < Duration::from_secs(600) {
         tokio::time::sleep(Duration::from_millis(100)).await;
         let now = inner.stash_received.load(Ordering::Relaxed);
-        if now != seen {
+        let progressed = now != seen;
+        if progressed {
             seen = now;
             last_progress = Instant::now();
+        }
+        if progressed || last_check.elapsed() >= Duration::from_secs(1) {
+            last_check = Instant::now();
             if holds_all_pieces(inner, obj) {
                 return;
             }
-        } else if last_progress.elapsed() >= inner.config.stem_assembly_idle {
+        }
+        if last_progress.elapsed() >= inner.config.stem_assembly_idle {
             return;
         }
     }
@@ -1254,6 +1287,8 @@ async fn await_pieces(inner: &Arc<Inner>, obj: &VerifiedObject) {
 /// Push our own anonymous objects into the stem, and fluff any embargo that ran out.
 async fn stem_pump(inner: Arc<Inner>) {
     let mut tick = tokio::time::interval(inner.config.announce_interval);
+    // When each outbox entry may leave (author delay), in memory only.
+    let mut not_before: HashMap<Digest, Instant> = HashMap::new();
     loop {
         tick.tick().await;
         let pending: Vec<(Digest, Option<VerifiedObject>)> = {
@@ -1264,7 +1299,16 @@ async fn stem_pump(inner: Arc<Inner>) {
                 .map(|id| (id, s.get(&id).ok().flatten()))
                 .collect()
         };
+        let now = Instant::now();
+        not_before.retain(|id, _| pending.iter().any(|(p, _)| p == id));
         for (id, obj) in pending {
+            let (lo, hi) = inner.config.author_delay;
+            let at = *not_before
+                .entry(id)
+                .or_insert_with(|| now + if hi > lo { rand::thread_rng().gen_range(lo..=hi) } else { lo });
+            if now < at {
+                continue;
+            }
             // Take it out first: a failed push puts it back.
             let _ = inner.store.lock().unwrap().stem_outbox_remove(&id);
             let done = match obj {
@@ -1323,6 +1367,33 @@ async fn cover_pump(inner: Arc<Inner>) {
             let pad = vec![0u8; rand::thread_rng().gen_range(128..1024)];
             let _ = send_any(&links, Message::Pad(pad), false).await;
         }
+    }
+}
+
+/// Decoy single messages at random times, sized like posts. A STEM leaving
+/// the author is a message nothing on the link triggered; with these, every
+/// node sends such messages all the time. Sent on the control queue, as a
+/// STEM is.
+async fn chatter_pump(inner: Arc<Inner>) {
+    let per_hour = inner.config.cover_messages_per_hour;
+    if per_hour == 0 {
+        return;
+    }
+    let mean = 3600.0 / per_hour as f64;
+    loop {
+        let wait = -mean * (1.0 - rand::random::<f64>()).ln();
+        tokio::time::sleep(Duration::from_secs_f64(wait.min(86_400.0))).await;
+        let target = {
+            let conns = inner.conns.lock().unwrap();
+            let ok: Vec<_> = conns.values().filter(|h| h.stem_ok).map(|h| h.tx.clone()).collect();
+            if ok.is_empty() {
+                continue;
+            }
+            ok[rand::thread_rng().gen_range(0..ok.len())].clone()
+        };
+        // Log-uniform 200..4096 bytes: short and long posts both common.
+        let len = (200f64.ln() + rand::random::<f64>() * (4096f64.ln() - 200f64.ln())).exp() as usize;
+        let _ = target.try_send(Message::Pad(vec![0u8; len.clamp(200, mesh_protocol::MAX_PAD)]));
     }
 }
 

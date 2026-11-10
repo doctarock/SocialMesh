@@ -117,6 +117,10 @@ enum Cmd {
         /// Attach files whose metadata can't be stripped (PDF, video, ...) as they are.
         #[arg(long)]
         keep_metadata: bool,
+        /// Announce straight from this device instead of the private route.
+        /// Faster, but nearby peers can tell this device wrote it.
+        #[arg(long)]
+        direct: bool,
     },
     /// Reply to an object.
     Reply {
@@ -135,6 +139,10 @@ enum Cmd {
         /// Attach files whose metadata can't be stripped (PDF, video, ...) as they are.
         #[arg(long)]
         keep_metadata: bool,
+        /// Announce straight from this device instead of the private route.
+        /// Faster, but nearby peers can tell this device wrote it.
+        #[arg(long)]
+        direct: bool,
     },
     /// Queue an object's attachments for download. A running `mesh run` fetches
     /// them from connected peers.
@@ -255,43 +263,44 @@ async fn main() -> Result<()> {
             Ok(())
         }
         Cmd::Peer { cmd } => peer(&home, cmd).await,
-        Cmd::Publish { text, anonymous, markdown, attach, keep_metadata } => {
+        Cmd::Publish { text, anonymous, markdown, attach, keep_metadata, direct } => {
+            if anonymous && direct {
+                bail!("--direct would announce an anonymous post from this device; it always takes the private route");
+            }
             let k = load_identity(&home)?;
             let store = Store::open(&home)?;
-            let mut c = attach_files(&store, Content::post(text), &attach, anonymous, keep_metadata)?;
+            let mut c = attach_files(&store, Content::post(text), &attach, !direct, keep_metadata)?;
             if markdown {
                 c = c.markdown();
             }
             if anonymous {
                 eprintln!("note: ownerless posts cannot be edited or withdrawn; copies may persist indefinitely.");
-                let obj = create(coarsen(c), Author::Ownerless)?;
-                save_anonymous(&store, &obj)
+                save_private(&store, &create(coarsen(c), Author::Ownerless)?)
+            } else if direct {
+                save_direct(&store, &create(c, Author::Signed(&k))?)
             } else {
-                let obj = create(c, Author::Signed(&k))?;
-                store.put(&obj, &Origin::Local)?;
-                println!("Object:\n{}", obj.id().short());
-                hint_if_not_running();
-                Ok(())
+                save_private(&store, &create(coarsen(c), Author::Signed(&k))?)
             }
         }
-        Cmd::Reply { parent, text, anonymous, ownerless, attach, keep_metadata } => {
+        Cmd::Reply { parent, text, anonymous, ownerless, attach, keep_metadata, direct } => {
+            if (anonymous || ownerless) && direct {
+                bail!("--direct would announce an anonymous reply from this device; it always takes the private route");
+            }
             let k = load_identity(&home)?;
             let store = Store::open(&home)?;
             let parent_id = store.resolve(&parent)?;
             let root = thread_root(&store, parent_id)?;
-            let c = attach_files(&store, Content::post(text).reply_to(parent_id), &attach, anonymous || ownerless, keep_metadata)?;
+            let c = attach_files(&store, Content::post(text).reply_to(parent_id), &attach, !direct, keep_metadata)?;
             if ownerless {
-                save_anonymous(&store, &create(coarsen(c), Author::Ownerless)?)
+                save_private(&store, &create(coarsen(c), Author::Ownerless)?)
             } else if anonymous {
                 let tk = Keypair::derive_thread_key(&load_anon_secret(&home)?, &root);
                 println!("Replying as Anonymous {}", tk.public().id().short());
-                save_anonymous(&store, &create(coarsen(c), Author::Signed(&tk))?)
+                save_private(&store, &create(coarsen(c), Author::Signed(&tk))?)
+            } else if direct {
+                save_direct(&store, &create(c, Author::Signed(&k))?)
             } else {
-                let obj = create(c, Author::Signed(&k))?;
-                store.put(&obj, &Origin::Local)?;
-                println!("Object:\n{}", obj.id().short());
-                hint_if_not_running();
-                Ok(())
+                save_private(&store, &create(coarsen(c), Author::Signed(&k))?)
             }
         }
         Cmd::Feed { limit } => {
@@ -566,7 +575,7 @@ async fn run(home: &Path, mut config: Config, lan: bool, rotate: bool, me: Optio
                     Event::Discovered { medium, addr } => println!("Found node via {medium} at {addr}"),
                     Event::ObjectRejected { from, reason } => println!("Rejected object from {}: {reason}", from.short()),
                     Event::LinkKeyRotated { id } => println!("New link key {}: reconnecting as a new node", id.short()),
-                    Event::Fluffed(id) => println!("Anonymous object {} is now public (left stem routing at this node)", id.short()),
+                    Event::Fluffed(id) => println!("Object {} is now public (it left the private route at this node)", id.short()),
                     Event::AttachmentComplete { manifest } => println!("Attachment {} complete and verified", manifest.short()),
                     Event::AttachmentFailed { manifest, reason } => println!("Attachment {} failed: {reason}", manifest.short()),
                 }
@@ -736,30 +745,46 @@ fn coarsen(mut c: Content) -> Content {
     c
 }
 
-/// Hand an anonymous object to stem routing. It is stored exactly like an
+/// Hand an object to the private route (stem). It is stored exactly like an
 /// object relayed for someone else, and is not announced from this device.
-fn save_anonymous(store: &Store, obj: &VerifiedObject) -> Result<()> {
+fn save_private(store: &Store, obj: &VerifiedObject) -> Result<()> {
     store.put_stem(obj, true)?;
     println!("Object:\n{}", obj.id().short());
-    eprintln!("(queued for anonymity routing: a running `mesh run` passes it to a relay peer,");
+    eprintln!("(private route: a running `mesh run` passes it to a relay after a short random delay,");
     eprintln!(" and it becomes public from somewhere along the route, not from this device)");
+    Ok(())
+}
+
+/// Store an object to be announced straight from this device.
+fn save_direct(store: &Store, obj: &VerifiedObject) -> Result<()> {
+    store.put(obj, &Origin::Local)?;
+    println!("Object:\n{}", obj.id().short());
+    hint_if_not_running();
     Ok(())
 }
 
 /// Seal files into the store and attach them to `c`.
 ///
-/// Anonymous attachments are stored as plain cache, exactly as a relay would
-/// hold them, and are limited in size because every relay on the anonymity
-/// route carries the whole file.
-fn attach_files(store: &Store, mut c: Content, files: &[PathBuf], anonymous: bool, keep_metadata: bool) -> Result<Content> {
+/// Files of posts on the private route are stored as plain cache, exactly as
+/// a relay would hold them, and are limited in size because every relay on
+/// the route carries the whole file.
+fn attach_files(store: &Store, mut c: Content, files: &[PathBuf], private: bool, keep_metadata: bool) -> Result<Content> {
+    let anonymous = private;
     let limit = if anonymous { mesh_node::Config::default().max_anonymous_attachments } else { MAX_ATTACHMENT_SIZE };
     let mut total = 0;
     for path in files {
         let len = fs::metadata(path).with_context(|| format!("reading {}", path.display()))?.len();
         total += len;
         if total > limit {
-            let what = if anonymous { "anonymous attachments" } else { "an attachment" };
-            bail!("{} would exceed the limit for {what} ({})", path.display(), human_size(limit));
+            if anonymous {
+                bail!(
+                    "{} would exceed the {} limit for files on the private route (every relay carries the whole file). \
+                     Use --direct to publish it from this device instead, if being known as its source is acceptable.",
+                    path.display(),
+                    human_size(limit)
+                );
+            }
+            bail!("{} would exceed the limit for an attachment ({})", path.display(), human_size(limit));
         }
         let data = fs::read(path)?;
         let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
