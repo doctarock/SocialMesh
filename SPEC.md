@@ -184,6 +184,24 @@ plaintext = u16 data_len || data || padding
 Noise `NN` authenticates no one by itself. Identity comes from HELLO, which is
 bound to `binding`.
 
+**HELLO carries a link key, not a posting identity.** Anyone who connects
+(anyone in radio range, for a phone) learns the key in HELLO, so it MUST NOT
+be a key the user signs posts with. A node SHOULD use a separate link key and
+MAY rotate it: on rotation it closes every link and reconnects under the new
+key, so no peer sees the old and new keys side by side. Nodes others reach by
+invitation (relays, home servers) keep a stable link key. Posting identities
+appear only inside signed objects.
+
+### 5.0.1 Link liveness
+
+- A node SHOULD send PAD on a link that has sent nothing for a while
+  (reference: 10 s).
+- A node SHOULD close a link that has received nothing for several of those
+  periods (reference: 35 s). Peers leaving radio range rarely say goodbye.
+- A new link to a peer over a medium that already has one **replaces** the
+  old link, except in a dial race (§5.3.1), so a returning peer always gets
+  through even if the old link isn't known to be dead yet.
+
 ### 5.1 Framing
 
 ```
@@ -237,6 +255,25 @@ tags are a protocol error.
 
 A second HELLO is a protocol error.
 
+### 5.3.1 Several links to one peer
+
+Two nodes MAY be connected over several media at once (TCP, Bluetooth, Wi-Fi
+Direct, ...). Each link is a complete, separately encrypted session (§5.0,
+§5.3); nothing ties links together on the wire.
+
+- Addresses name their medium as `medium:address` (e.g. `ble:…`). An address
+  without a known prefix uses the node's default transport (TCP).
+- A node keeps **at most one link per peer per medium**. If both ends dial
+  each other over the same medium, both keep the link whose initiator has the
+  smaller identity ID (byte order) and close the other. A dial race is two
+  links from opposite ends within a few seconds (reference: 5 s). Otherwise
+  the newer link replaces the older (§5.0.1).
+- Requests are answered on the link they arrived on. A node SHOULD spread its
+  own traffic across a peer's links: blob requests to the least-loaded link,
+  STASH runs shared between links (each link takes the next piece when free
+  and is paced on its own, §5.5), and control messages (HAVE, STEM, PAD) on a
+  random link. HAVE for an object is sent on one link per peer, not all.
+
 ### 5.4 Propagation policy
 
 A node always offers objects authored locally. It offers objects received from
@@ -286,12 +323,17 @@ Normative rules; rationale in docs/ORIGIN-PRIVACY.md.
   STEM as a protocol violation.
 - Anonymous objects SHOULD round `created_ms` down to a whole minute.
 - **Attachments ride the stem.** Before sending STEM for an object with
-  attachments, a node sends every blob of those attachments as STASH, in
-  order, on the same ordered queue, then the STEM. The successor therefore
-  holds the whole file before it learns which post it belongs to, and every
-  hop on the route ends up holding it. The author follows the same rule.
-- A node that does not hold every blob of a stem object's attachments MUST NOT
-  forward it as STEM; it fluffs instead (upstream holders serve the rest).
+  attachments, a node hands every blob of those attachments to the successor
+  as STASH, spread over all of its links to the successor (§5.3.1), then sends
+  the STEM on one of them. Every hop on the route ends up holding the file.
+  The author follows the same rule.
+- Over several links the STEM can overtake pieces still queued on a slower
+  one. A relay that receives a STEM before all of its pieces SHOULD wait while
+  pieces keep arriving (reference: give up after 15 s with no new piece, or
+  10 minutes in all).
+- A node that does not hold every blob of a stem object's attachments (after
+  that wait) MUST NOT forward it as STEM; it fluffs instead (upstream holders
+  serve the rest).
 - STASH is accepted only by relaying nodes, only as a 65 536-byte blob, and
   rate-limited per peer (default 1 024 per minute). It is stored like any
   other cached blob.
@@ -347,4 +389,7 @@ mesh1:<identity-id hex>[@addr[,addr...]]
 ```
 
 Parsers accept the string embedded in a longer URL (`https://…#mesh1:…`).
-Addresses are hints; the identity is pinned during the handshake.
+Addresses are hints; the identity is pinned during the handshake. The
+identity in an invitation is the node's (stable) **link key** (§5.0), not
+its owner's posting identity. Addresses stored without an explicit identity
+are not pinned to whichever key first answers, because link keys may rotate.

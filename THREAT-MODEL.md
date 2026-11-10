@@ -13,6 +13,7 @@ adversary, such as state surveillance.
 | **Confidentiality in transit:** link observers can't read traffic | Noise `NN` handshake (X25519, ChaCha20-Poly1305, BLAKE2s) with fresh keys per connection; records padded to 256-byte size classes |
 | **Forward secrecy:** a recording can't be decrypted later by stealing keys | Connection keys are ephemeral and never stored; identity keys only sign |
 | **Peer identity:** you're talking to the key you think | Each side signs the connection's unique handshake hash; identity pinning for invitations and known peers |
+| **Device ≠ author:** connecting to a device doesn't reveal who it posts as | Links prove a separate link key, never the posting key. User nodes rotate it daily and on network change; relays have no posting identity at all |
 | **Dialler identity hiding** | The node being dialled proves itself first. A dialler with a pinned identity hangs up on an impostor without revealing who it is, and `peer add` never reveals it |
 | **No chokepoint:** nobody can switch the network off centrally | No accounts, servers, DNS or bootstrap service; LAN and offline bundles work with no Internet |
 | **Authorship unlinkability across threads** | Thread keys derived from a local secret; not linkable without it |
@@ -51,15 +52,32 @@ mesh: once fluffed, every post is public to every node. Specifically:
   A censor using deep packet inspection could identify and block it.
   Defeating that needs pluggable obfuscation transports (as Tor bridges use)
   or an onion transport.
-- **A listener's identity.** The responder proves its identity to anyone who
-  connects, so a reachable node's identity is effectively public. Invitations
-  publish it anyway.
+- **A listener's link key.** The responder proves its link key to anyone who
+  connects, so a reachable node's link key is effectively public. That's a
+  device pseudonym, not the owner's posting identity. A stable link key (for
+  invitations) lets peers recognise the same device over time; a rotating one
+  limits that to a day or one network.
+- **Who first offers a signed post.** A signed post is announced first by its
+  author's device. A peer connected to that device (anyone nearby, for a
+  phone) sees the link key offer a new post signed by X before anyone else
+  has it, and can conclude "this device is X". Link keys stop the handshake
+  from saying so outright; they don't stop this. Posting anonymously, or
+  sending signed posts through the stem route (not yet built for signed
+  posts), avoids it.
 - **An unpinned dialler's identity.** It is revealed to whichever node answers,
   once that node has proved *some* identity. Pinned dials and LAN sightings
   with an identity hint are protected; plain addresses are not.
 - **Post-quantum.** X25519 is not quantum-resistant. A recording made today
   could in principle be decrypted by a future quantum computer. A hybrid
   key exchange (e.g. ML-KEM + X25519) is a candidate for a future version.
+
+### Several media at once
+
+Peers connected over several media spread each transfer across them
+(SPEC.md §5.3.1). An observer of one medium sees only part of a transfer:
+fewer pieces, a shorter run. An observer of several media in the same place
+(a radio sniffer that covers both Bluetooth and Wi-Fi) can line the parts up
+by timing. Each radio a device uses is another way to notice it is there.
 
 ### Presence on a local network
 
@@ -144,7 +162,7 @@ HTML or script is ever executed.
 
 1. Passphrase-protected keys at rest.
 2. Clock sanity policy for `created_ms` (currently the author's unverified claim).
-3. Duplicate-connection tie-break when two nodes dial each other at once (harmless, but wasteful).
+3. Optional stem routing for signed posts, so the author's device isn't the first to offer them.
 4. Independent security review of the secure channel, handshake and object format.
 5. Traffic obfuscation or an onion transport where running SocialMesh is itself risky.
 6. Metadata stripping for PDF and video; adaptive cover rates for phones on metered data.

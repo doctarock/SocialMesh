@@ -56,6 +56,37 @@ enum Cmd {
         /// Most disk space for cached data from others, in MiB. Your own files don't count.
         #[arg(long, default_value_t = 2048)]
         cache_mib: u64,
+        /// Keep one link key across runs instead of rotating it. Needed if you
+        /// hand out `mesh invite` links; lets peers recognise this device.
+        #[arg(long)]
+        stable_link_key: bool,
+    },
+    /// Run a relay: connects, caches and passes data on for others. Holds no
+    /// posting identity and never publishes. Suits an always-on spare device.
+    Relay {
+        /// Address to listen on.
+        #[arg(long, default_value_t = format!("0.0.0.0:{DEFAULT_PORT}"))]
+        listen: String,
+        /// Listen for nearby nodes but never transmit discovery beacons.
+        #[arg(long)]
+        no_beacon: bool,
+        /// Disable LAN discovery entirely (only dial saved peers).
+        #[arg(long)]
+        no_lan: bool,
+        /// Cover traffic in MiB per hour. A relay usually has bandwidth to spare,
+        /// and its cover helps hide everyone's anonymous sends around it.
+        #[arg(long, default_value_t = 64)]
+        cover_mib_per_hour: u64,
+        /// Most disk space for cached data, in MiB.
+        #[arg(long, default_value_t = 8192)]
+        cache_mib: u64,
+        /// Largest attachment fetched automatically to keep available, in MiB.
+        #[arg(long, default_value_t = 16)]
+        auto_fetch_mib: u64,
+        /// Rotate the link key daily (and on network change) instead of keeping
+        /// a stable one. Saved invitations to this relay stop working.
+        #[arg(long)]
+        rotate_link_key: bool,
     },
     /// Print a mesh1: invitation others can use to connect to you.
     Invite {
@@ -172,10 +203,16 @@ async fn main() -> Result<()> {
             println!("Identity:   {}", k.public().id().short());
             println!("Full ID:    {}", k.public().id());
             println!("Public key: {}", hex::encode(k.public().to_bytes()));
+            if link_key_path(&home).exists() {
+                println!("Link key:   {} (stable; what peers see on links)", load_stable_link_key(&home)?.public().id().short());
+            } else {
+                println!("Link key:   rotating (a fresh one each run, daily and on network change)");
+            }
             println!("Home:       {}", home.display());
             Ok(())
         }
-        Cmd::Run { listen, no_relay, no_beacon, no_lan, cover_mib_per_hour, cache_mib } => {
+        Cmd::Run { listen, no_relay, no_beacon, no_lan, cover_mib_per_hour, cache_mib, stable_link_key } => {
+            let me = load_identity(&home)?.public().id();
             let config = Config {
                 listen: Some(listen),
                 relay: !no_relay,
@@ -184,10 +221,27 @@ async fn main() -> Result<()> {
                 cache_budget: cache_mib * 1024 * 1024,
                 ..Config::default()
             };
-            run(&home, config, !no_lan).await
+            println!("Posting identity: {} (only appears in posts you sign, never on links)", me.short());
+            run(&home, config, !no_lan, !stable_link_key, Some(me)).await
+        }
+        Cmd::Relay { listen, no_beacon, no_lan, cover_mib_per_hour, cache_mib, auto_fetch_mib, rotate_link_key } => {
+            fs::create_dir_all(&home)?;
+            let config = Config {
+                listen: Some(listen),
+                relay: true,
+                beacon: !no_beacon,
+                cover_bytes_per_hour: cover_mib_per_hour * 1024 * 1024,
+                cache_budget: cache_mib * 1024 * 1024,
+                auto_fetch_max: auto_fetch_mib * 1024 * 1024,
+                ..Config::default()
+            };
+            println!("Relay mode: no posting identity; caches and passes data on for others.");
+            println!("It can't read sealed files or tell real pieces from decoys.");
+            run(&home, config, !no_lan, rotate_link_key, None).await
         }
         Cmd::Invite { addrs, no_addr } => {
-            let k = load_identity(&home)?;
+            fs::create_dir_all(&home)?;
+            let k = load_stable_link_key(&home)?;
             let addrs = if no_addr {
                 vec![]
             } else if addrs.is_empty() {
@@ -196,6 +250,8 @@ async fn main() -> Result<()> {
                 addrs.iter().map(|a| normalise_addr(a)).collect()
             };
             println!("{}", Invitation { identity: k.public().id(), addrs });
+            eprintln!("note: this names this device's link key, not your posting identity. It stays valid only while");
+            eprintln!("      the node runs with a stable link key: `mesh run --stable-link-key` or `mesh relay`.");
             Ok(())
         }
         Cmd::Peer { cmd } => peer(&home, cmd).await,
@@ -397,6 +453,19 @@ fn load_identity(home: &Path) -> Result<Keypair> {
     Ok(Keypair::from_seed(&read_secret(&path)?))
 }
 
+fn link_key_path(home: &Path) -> PathBuf {
+    home.join("link.key")
+}
+
+/// The stable link key, created on first use. Never the posting identity.
+fn load_stable_link_key(home: &Path) -> Result<Keypair> {
+    let path = link_key_path(home);
+    if !path.exists() {
+        write_secret(&path, &mesh_crypto::random_bytes::<32>())?;
+    }
+    Ok(Keypair::from_seed(&read_secret(&path)?))
+}
+
 fn load_anon_secret(home: &Path) -> Result<[u8; 32]> {
     let path = home.join("anonymous.key");
     if !path.exists() {
@@ -416,12 +485,24 @@ fn thread_root(store: &Store, mut id: Digest) -> Result<Digest> {
     Ok(id)
 }
 
-async fn run(home: &Path, config: Config, lan: bool) -> Result<()> {
+/// Run a node. `rotate`: fresh link key each run, daily and on network change;
+/// otherwise the stable one in `link.key`. `me` is the posting identity, if
+/// any, used only to label your own posts in the output.
+async fn run(home: &Path, mut config: Config, lan: bool, rotate: bool, me: Option<Digest>) -> Result<()> {
     let (relay, beacon) = (config.relay, config.beacon);
-    let k = load_identity(home)?;
     let store = Store::open(home)?;
-    let me = k.public().id();
-    println!("Identity: {}", me.short());
+    let me = me.unwrap_or_else(|| Digest::of(b"no posting identity"));
+    let k = if rotate {
+        config.link_key_rotation = Some(Duration::from_secs(24 * 3600));
+        Keypair::generate()
+    } else {
+        load_stable_link_key(home)?
+    };
+    println!(
+        "Link key: {} ({})",
+        k.public().id().short(),
+        if rotate { "rotates daily and on network change" } else { "stable" }
+    );
     if config.cover_bytes_per_hour == 0 {
         println!("Cover traffic off: anonymous posts with files are easier to spot on your connection.");
     } else {
@@ -437,6 +518,8 @@ async fn run(home: &Path, config: Config, lan: bool) -> Result<()> {
     }
     let mut events = node.subscribe();
     let running = node.start().await?;
+    let mut net_check = tokio::time::interval(Duration::from_secs(30));
+    let mut last_ip = local_ipv4();
     if !relay {
         println!("Relay disabled: only your own objects will be offered to peers.");
     }
@@ -445,6 +528,14 @@ async fn run(home: &Path, config: Config, lan: bool) -> Result<()> {
     loop {
         tokio::select! {
             _ = tokio::signal::ctrl_c() => break,
+            _ = net_check.tick(), if rotate => {
+                // New network: new key, so this device can't be followed between them.
+                let ip = local_ipv4();
+                if ip != last_ip {
+                    last_ip = ip;
+                    node.rotate_link_key();
+                }
+            }
             ev = events.recv() => {
                 let ev = match ev {
                     Ok(ev) => ev,
@@ -453,13 +544,13 @@ async fn run(home: &Path, config: Config, lan: bool) -> Result<()> {
                 };
                 match ev {
                     Event::Listening(a) => println!("Listening on {a}..."),
-                    Event::PeerConnected { peer, addr, inbound } => {
+                    Event::PeerConnected { peer, addr, inbound, medium } => {
                         failing.remove(&addr);
-                        println!("Connected {} ({} {addr})", peer.short(), if inbound { "from" } else { "to" });
+                        println!("Connected {} over {medium} ({} {addr})", peer.short(), if inbound { "from" } else { "to" });
                     }
-                    Event::PeerDisconnected { peer, reason, .. } => match reason {
-                        Some(r) => println!("Disconnected {}: {r}", peer.short()),
-                        None => println!("Disconnected {}", peer.short()),
+                    Event::PeerDisconnected { peer, medium, reason, .. } => match reason {
+                        Some(r) => println!("Disconnected {} over {medium}: {r}", peer.short()),
+                        None => println!("Disconnected {} over {medium}", peer.short()),
                     },
                     Event::DialFailed { addr, reason } => {
                         if failing.insert(addr.clone()) {
@@ -474,6 +565,7 @@ async fn run(home: &Path, config: Config, lan: bool) -> Result<()> {
                     }
                     Event::Discovered { medium, addr } => println!("Found node via {medium} at {addr}"),
                     Event::ObjectRejected { from, reason } => println!("Rejected object from {}: {reason}", from.short()),
+                    Event::LinkKeyRotated { id } => println!("New link key {}: reconnecting as a new node", id.short()),
                     Event::Fluffed(id) => println!("Anonymous object {} is now public (left stem routing at this node)", id.short()),
                     Event::AttachmentComplete { manifest } => println!("Attachment {} complete and verified", manifest.short()),
                     Event::AttachmentFailed { manifest, reason } => println!("Attachment {} failed: {reason}", manifest.short()),
@@ -491,7 +583,7 @@ async fn peer(home: &Path, cmd: PeerCmd) -> Result<()> {
     let store = Store::open(home)?;
     match cmd {
         PeerCmd::Add { addr } if addr.contains(mesh_discovery::invite::PREFIX) => {
-            let k = load_identity(home)?;
+            let k = Keypair::generate(); // probes never reveal a key, but don't touch ours
             let inv = Invitation::parse(&addr)?;
             if inv.addrs.is_empty() {
                 println!("Invitation has no addresses. Run `mesh run`: the identity is pinned and will be");
@@ -518,7 +610,7 @@ async fn peer(home: &Path, cmd: PeerCmd) -> Result<()> {
             }
         }
         PeerCmd::Add { addr } => {
-            let k = load_identity(home)?;
+            let k = Keypair::generate();
             let addr = normalise_addr(&addr);
             match mesh_node::probe(&TcpTransport, &k, &addr, Duration::from_secs(10)).await {
                 Ok(pk) => {

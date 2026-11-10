@@ -16,11 +16,23 @@ mesh init                      # create a local identity (no account, no email, 
 mesh run                       # listen on :7842 and find nodes on your LAN automatically
 ```
 
+Your posting identity never goes on the wire. Peers see a separate **link key** that `mesh run`
+replaces each run, daily and when you change network, so nearby devices can't tell who you post as.
+
 Connecting across the Internet: share an invitation and have the other person add it.
 
 ```sh
-mesh invite --addr your.public.host:7842     # prints mesh1:<identity>@your.public.host:7842
-mesh peer add mesh1:...                      # on their machine; the identity is pinned
+mesh invite --addr your.public.host:7842     # prints mesh1:<link key>@your.public.host:7842
+mesh run --stable-link-key                   # keep the invitation valid
+mesh peer add mesh1:...                      # on their machine; the link key is pinned
+```
+
+Running a relay (a spare PC, Raspberry Pi or old phone left on): no identity, no posting; it connects,
+caches and passes data on for everyone around it, and sends more cover traffic than a phone can.
+
+```sh
+mesh relay                     # stable link key; share it with `mesh invite --addr ...`
+mesh relay --cache-mib 20000 --cover-mib-per-hour 128
 ```
 
 Posting and reading:

@@ -708,3 +708,325 @@ async fn cover_traffic_flows_and_is_absorbed_as_cache() {
     }
     assert_eq!(b.node.connected_peers(), vec![a.id()]);
 }
+
+// ---- Several media at once ----
+
+/// A second medium for tests: TCP under another name, so it gets its own
+/// links, listener and `alt:` addresses, like Bluetooth or Wi-Fi Direct would.
+struct AltMedium;
+
+impl mesh_transport::Transport for AltMedium {
+    fn name(&self) -> &'static str {
+        "alt"
+    }
+    fn dial<'a>(&'a self, addr: &'a str) -> mesh_transport::BoxFuture<'a, std::io::Result<mesh_transport::Stream>> {
+        TcpTransport.dial(addr)
+    }
+    fn listen<'a>(
+        &'a self,
+        addr: &'a str,
+    ) -> mesh_transport::BoxFuture<'a, std::io::Result<Box<dyn mesh_transport::Listener>>> {
+        TcpTransport.listen(addr)
+    }
+}
+
+impl TestNode {
+    /// Listens on TCP and on the `alt` medium; dials every address in `dial`.
+    async fn start_two_media(config: Config, dial: &[String]) -> TestNode {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(dir.path()).unwrap();
+        for d in dial {
+            store.add_peer(d, None).unwrap();
+        }
+        let seed = mesh_crypto::random_bytes::<32>();
+        let node = Node::new(Keypair::from_seed(&seed), store, Arc::new(TcpTransport), config);
+        node.add_transport(Arc::new(AltMedium), Some("127.0.0.1:0".into()));
+        let events = node.subscribe();
+        let running = node.start().await.unwrap();
+        TestNode { node, running: Some(running), events, keypair: Keypair::from_seed(&seed), _dir: dir }
+    }
+
+    /// Both of this node's addresses: plain TCP and `alt:...`.
+    fn both_addrs(&self) -> Vec<String> {
+        self.running.as_ref().unwrap().listening.clone()
+    }
+
+    fn media_to(&self, peer: Digest) -> Vec<String> {
+        self.node.links().into_iter().filter(|(p, _)| *p == peer).map(|(_, m)| m).collect()
+    }
+
+    async fn wait_media(&self, peer: Digest, n: usize) {
+        for _ in 0..200 {
+            if self.media_to(peer).len() >= n {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+        panic!("never reached {n} links to {}: {:?}", peer.short(), self.media_to(peer));
+    }
+}
+
+#[tokio::test]
+async fn peer_is_linked_over_every_shared_medium() {
+    let a = TestNode::start_two_media(test_config(), &[]).await;
+    assert_eq!(a.both_addrs().len(), 2);
+    assert!(a.both_addrs()[1].starts_with("alt:"));
+    let mut b = TestNode::start_two_media(test_config(), &a.both_addrs()).await;
+    b.wait_media(a.id(), 2).await;
+    a.wait_media(b.id(), 2).await;
+    assert_eq!(b.media_to(a.id()), vec!["alt".to_string(), "tcp".to_string()]);
+    assert_eq!(b.node.connected_peers(), vec![a.id()], "still one peer");
+
+    // Stable: no redialling churn once linked.
+    let _ = drain(&mut b.events, Duration::from_millis(100)).await;
+    let later = drain(&mut b.events, Duration::from_millis(1000)).await;
+    assert!(
+        !later.iter().any(|e| matches!(e, Event::PeerConnected { .. } | Event::PeerDisconnected { .. })),
+        "{later:?}"
+    );
+
+    // A post still arrives.
+    let post = a.publish(Content::post("two roads"));
+    b.expect_object(post).await;
+}
+
+#[tokio::test]
+async fn both_ends_dialling_keep_one_link_per_medium() {
+    let a = TestNode::start_two_media(test_config(), &[]).await;
+    let b = TestNode::start_two_media(test_config(), &a.both_addrs()).await;
+    for addr in b.both_addrs() {
+        a.node.dial(&addr, None);
+    }
+    a.wait_media(b.id(), 2).await;
+    b.wait_media(a.id(), 2).await;
+    tokio::time::sleep(Duration::from_millis(800)).await;
+    assert_eq!(a.media_to(b.id()), vec!["alt".to_string(), "tcp".to_string()]);
+    assert_eq!(b.media_to(a.id()), vec!["alt".to_string(), "tcp".to_string()]);
+}
+
+#[tokio::test]
+async fn attachment_arrives_over_every_medium() {
+    let a = TestNode::start_two_media(test_config(), &[]).await;
+    let mut b = TestNode::start_two_media(Config { relay: false, ..test_config() }, &a.both_addrs()).await;
+    b.wait_media(a.id(), 2).await;
+    let data = test_file(2 * 1024 * 1024, 5); // 32 chunks
+    let (post, manifest) = a.publish_with_file("over two media", &data);
+    let obj = b.expect_object(post).await;
+    b.node.fetch_attachments(&obj).unwrap();
+    b.expect_attachment(manifest).await;
+    assert_eq!(b.read_attachment(post), data);
+
+    let by = b.node.pieces_by_medium();
+    assert!(by.get("tcp").copied().unwrap_or(0) >= 4 && by.get("alt").copied().unwrap_or(0) >= 4, "{by:?}");
+}
+
+#[tokio::test]
+async fn anonymous_attachment_is_split_across_media_and_reassembled() {
+    // Author A — relay B over both media; C — B over TCP only. B always fluffs.
+    let mut b = TestNode::start_two_media(Config { stem_fluff_probability: 1.0, ..test_config() }, &[]).await;
+    let a = TestNode::start_two_media(test_config(), &b.both_addrs()).await;
+    let mut c = TestNode::start(true, &[&b]).await;
+    b.wait_media(a.id(), 2).await;
+    b.wait_connected(2).await;
+
+    let leak = test_file(1024 * 1024, 11); // 18 sealed pieces with the manifest
+    let w = a.node.with_store(|s| s.add_file(&leak, BlobSource::Cache)).unwrap();
+    let obj = create(Content::post("split leak").attach(attachment(&w)), Author::Ownerless).unwrap();
+    a.node.publish_anonymous(&obj).unwrap();
+
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(15);
+    loop {
+        if let Event::Fluffed(id) = tokio::time::timeout_at(deadline, b.events.recv()).await.unwrap().unwrap() {
+            if id == obj.id() {
+                break;
+            }
+        }
+    }
+    // B held the whole file when it went public, and got it over both media.
+    let blobs = b.node.with_store(|s| s.attachment_blobs(&w).unwrap());
+    assert!(b.node.with_store(|s| blobs.iter().all(|id| s.has_blob(id).unwrap())));
+    let by = b.node.pieces_by_medium();
+    assert!(by.get("tcp").copied().unwrap_or(0) >= 1 && by.get("alt").copied().unwrap_or(0) >= 1, "{by:?}");
+    assert_eq!(by.values().sum::<u64>(), blobs.len() as u64, "{by:?}");
+
+    let got = c.expect_object(obj.id()).await;
+    c.node.fetch_attachments(&got).unwrap();
+    c.expect_attachment(w.manifest).await;
+    assert_eq!(c.read_attachment(obj.id()), leak);
+}
+
+#[tokio::test]
+async fn relay_waits_for_pieces_still_on_a_slower_link() {
+    // A STEM that overtakes its pieces must not end the route early.
+    use mesh_protocol::secure::{secure, Role};
+    use mesh_protocol::{hello_input, read_message, write_message, Message, PROTOCOL_VERSION};
+
+    // B relays and never fluffs early; D is B's only other peer.
+    let mut b = TestNode::start_with(Config { stem_fluff_probability: 0.0, ..test_config() }, &[]).await;
+    let mut d = TestNode::start_with(Config { stem_fluff_probability: 1.0, ..test_config() }, &[&b]).await;
+    b.wait_connected(1).await;
+
+    // A sealed file and its anonymous post, prepared in a scratch store.
+    let dir = tempfile::tempdir().unwrap();
+    let scratch = Store::open(dir.path()).unwrap();
+    let leak = test_file(300_000, 21);
+    let w = scratch.add_file(&leak, BlobSource::Cache).unwrap();
+    let obj = create(Content::post("late pieces").attach(attachment(&w)), Author::Ownerless).unwrap();
+    let pieces: Vec<Vec<u8>> =
+        scratch.attachment_blobs(&w).unwrap().iter().map(|id| scratch.get_blob(id).unwrap().unwrap()).collect();
+
+    // Hand-rolled author: STEM first, pieces a second later.
+    let sock = tokio::net::TcpStream::connect(b.addr()).await.unwrap();
+    let ch = secure(sock, Role::Initiator).await.unwrap();
+    let (mut rd, mut wr) = tokio::io::split(ch.stream);
+    assert!(matches!(read_message(&mut rd).await.unwrap(), Some(Message::Hello { .. })));
+    let k = Keypair::generate();
+    let sig = k.sign(&hello_input(&ch.binding, Role::Initiator, PROTOCOL_VERSION, 1, &k.public()));
+    write_message(&mut wr, &Message::Hello { protocol: PROTOCOL_VERSION, flags: 1, public_key: k.public(), signature: sig })
+        .await
+        .unwrap();
+    b.wait_connected(2).await;
+    write_message(&mut wr, &Message::Stem(obj.bytes().to_vec())).await.unwrap();
+    tokio::time::sleep(Duration::from_millis(1000)).await;
+    let early = drain(&mut b.events, Duration::from_millis(10)).await;
+    assert!(!early.iter().any(|e| matches!(e, Event::Fluffed(id) if *id == obj.id())), "B ended the stem early");
+    for p in pieces {
+        write_message(&mut wr, &Message::Stash(p)).await.unwrap();
+    }
+
+    // B passes post and file on to D, which makes it public holding the file.
+    d.expect_object(obj.id()).await;
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        if let Event::Fluffed(id) = tokio::time::timeout_at(deadline, d.events.recv()).await.unwrap().unwrap() {
+            if id == obj.id() {
+                break;
+            }
+        }
+    }
+    let blobs = d.node.with_store(|s| s.attachment_blobs(&w).unwrap());
+    assert!(d.node.with_store(|s| blobs.iter().all(|id| s.has_blob(id).unwrap())), "D holds the whole file");
+    drop(wr);
+}
+
+// ---- Link liveness and link keys ----
+
+/// Connect to `addr` by hand and complete the handshake as `key`, relaying.
+async fn raw_link(
+    addr: &str,
+    key: &Keypair,
+) -> (
+    tokio::io::ReadHalf<tokio::io::DuplexStream>,
+    tokio::io::WriteHalf<tokio::io::DuplexStream>,
+) {
+    use mesh_protocol::secure::{secure, Role};
+    use mesh_protocol::{hello_input, read_message, write_message, Message, PROTOCOL_VERSION};
+    let sock = tokio::net::TcpStream::connect(addr).await.unwrap();
+    let ch = secure(sock, Role::Initiator).await.unwrap();
+    let (mut rd, mut wr) = tokio::io::split(ch.stream);
+    assert!(matches!(read_message(&mut rd).await.unwrap(), Some(Message::Hello { .. })));
+    let sig = key.sign(&hello_input(&ch.binding, Role::Initiator, PROTOCOL_VERSION, 1, &key.public()));
+    write_message(&mut wr, &Message::Hello { protocol: PROTOCOL_VERSION, flags: 1, public_key: key.public(), signature: sig })
+        .await
+        .unwrap();
+    (rd, wr)
+}
+
+/// Read until the link closes. Panics if it stays open for `within`.
+async fn expect_closed<R: tokio::io::AsyncRead + Unpin>(rd: &mut R, within: Duration) {
+    let deadline = tokio::time::Instant::now() + within;
+    loop {
+        match tokio::time::timeout_at(deadline, mesh_protocol::read_message(rd)).await {
+            Ok(Ok(Some(_))) => continue,
+            Ok(_) => return, // closed or broken
+            Err(_) => panic!("link still open"),
+        }
+    }
+}
+
+#[tokio::test]
+async fn silent_link_is_dropped() {
+    let mut a = TestNode::start_with(
+        Config { keepalive: Duration::from_millis(200), link_timeout: Duration::from_millis(1000), ..test_config() },
+        &[],
+    )
+    .await;
+    let k = Keypair::generate();
+    // A peer that completes the handshake and then says nothing at all, as one
+    // that walked out of radio range would.
+    let (mut rd, _wr) = raw_link(a.addr(), &k).await;
+    a.wait_connected(1).await;
+
+    // We keep reading, so A's own keepalives get through; ours never come.
+    expect_closed(&mut rd, Duration::from_secs(5)).await;
+    assert!(a.node.connected_peers().is_empty());
+    let evs = drain(&mut a.events, Duration::from_millis(50)).await;
+    assert!(
+        evs.iter().any(|e| matches!(e, Event::PeerDisconnected { reason: Some(r), .. } if r.contains("silent"))),
+        "{evs:?}"
+    );
+}
+
+#[tokio::test]
+async fn keepalives_hold_an_idle_link_open() {
+    let quick = || Config { keepalive: Duration::from_millis(100), link_timeout: Duration::from_millis(600), ..test_config() };
+    let a = TestNode::start_with(quick(), &[]).await;
+    let mut b = TestNode::start_with(quick(), &[&a]).await;
+    b.wait_connected(1).await;
+    // Many timeouts' worth of idleness: keepalives keep the link up.
+    let evs = drain(&mut b.events, Duration::from_millis(2000)).await;
+    assert!(!evs.iter().any(|e| matches!(e, Event::PeerDisconnected { .. })), "{evs:?}");
+    assert_eq!(b.node.connected_peers(), vec![a.id()]);
+}
+
+#[tokio::test]
+async fn returning_peer_replaces_its_stale_link() {
+    let a = TestNode::start_with(
+        Config {
+            keepalive: Duration::from_millis(200),
+            link_race_window: Duration::from_millis(200),
+            ..test_config() // long link_timeout: A hasn't noticed the old link is dead
+        },
+        &[],
+    )
+    .await;
+    let k = Keypair::generate();
+    let (mut old_rd, _old_wr) = raw_link(a.addr(), &k).await;
+    a.wait_connected(1).await;
+    tokio::time::sleep(Duration::from_millis(400)).await;
+
+    // The same peer comes back over the same medium and dials again.
+    let (mut new_rd, _new_wr) = raw_link(a.addr(), &k).await;
+    expect_closed(&mut old_rd, Duration::from_secs(3)).await;
+    assert_eq!(a.node.links(), vec![(k.public().id(), "tcp".to_string())]);
+    // The new link is the live one: A's keepalives arrive on it.
+    let m = tokio::time::timeout(Duration::from_secs(2), mesh_protocol::read_message(&mut new_rd)).await;
+    assert!(matches!(m, Ok(Ok(Some(_)))), "{m:?}");
+}
+
+#[tokio::test]
+async fn rotating_the_link_key_reconnects_as_a_stranger() {
+    let mut a = TestNode::start(true, &[]).await;
+    let b = TestNode::start(true, &[&a]).await;
+    a.wait_connected(1).await;
+    let old = b.node.identity().id();
+    assert_eq!(a.node.connected_peers(), vec![old]);
+
+    b.node.rotate_link_key();
+    let new = b.node.identity().id();
+    assert_ne!(old, new);
+    for _ in 0..200 {
+        if a.node.connected_peers() == vec![new] {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    // A never holds both keys at once, and only knows the new one now.
+    assert_eq!(a.node.connected_peers(), vec![new]);
+
+    // Signed posts are untouched: the posting identity was never the link key.
+    let author = Keypair::generate();
+    let obj = create(Content::post("still me"), Author::Signed(&author)).unwrap();
+    b.node.publish(&obj).unwrap();
+    a.expect_object(obj.id()).await;
+}

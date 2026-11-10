@@ -24,6 +24,18 @@
 //!
 //! Attachments are fetched separately, on demand, chunk by chunk from any
 //! peers that have them (see [`fetch`]).
+//!
+//! A peer can be connected over several media at once (TCP, Bluetooth, Wi-Fi
+//! Direct, ...), one link per medium. Each link is a full, separately
+//! encrypted session. Traffic to a peer is spread across all of its links:
+//! attachment requests go to whichever link is least loaded, stem pieces are
+//! shared out with each link paced on its own, and control messages pick a
+//! random link. An observer of any one medium sees only part of it.
+//!
+//! The key a node proves on its links is a **link key**, not the user's posting
+//! identity. Anyone in radio range can connect and learn the link key, so it
+//! must not say who writes what. It can rotate ([`Node::rotate_link_key`]);
+//! relays and nodes reached by invitation keep a stable one.
 
 mod fetch;
 
@@ -38,13 +50,14 @@ use mesh_protocol::{
 use rand::Rng;
 use mesh_object::blob::BLOB_SIZE;
 use mesh_store::{BlobSource, Origin, Store};
-use mesh_transport::{Stream, Transport};
-use std::collections::{HashMap, HashSet};
+use mesh_transport::{Listener, Stream, Transport};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
 use tokio::io::{AsyncRead, AsyncWrite};
-use tokio::sync::{broadcast, mpsc, watch};
+use tokio::sync::mpsc::error::SendError;
+use tokio::sync::{broadcast, mpsc, watch, Notify};
 use tokio::task::JoinSet;
 
 #[derive(Clone, Debug)]
@@ -78,8 +91,26 @@ pub struct Config {
     /// How long a node keeps the same stem successor. A stable route stops a
     /// peer from learning the author by watching which successor changes.
     pub stem_epoch: Duration,
+    /// A relay that gets a STEM before all of its file (pieces still coming
+    /// over a slower link) waits for them while pieces keep arriving. It gives
+    /// up after this long with no new piece, and ends the stem itself.
+    pub stem_assembly_idle: Duration,
     /// STEM messages accepted per peer per minute.
     pub max_stems_per_minute: u32,
+    /// Send a PAD on a link that has been quiet this long, so the other end
+    /// knows it is still there.
+    pub keepalive: Duration,
+    /// Close a link that has sent nothing for this long (a peer that walked
+    /// out of range rarely says goodbye).
+    pub link_timeout: Duration,
+    /// Two links over the same medium opened from opposite ends within this
+    /// window are a dial race: both ends keep the same one. Otherwise the newer
+    /// link replaces the older, so a peer coming back into range always
+    /// reconnects even if we still hold its dead link.
+    pub link_race_window: Duration,
+    /// Replace the link key this often (with ±10% jitter), closing every link
+    /// so no peer sees the old and new key side by side. `None` keeps it.
+    pub link_key_rotation: Option<Duration>,
     /// STASH blobs (64 KiB each) accepted per peer per minute.
     pub max_stash_per_minute: u32,
     /// Largest total attachment size an anonymous object may carry. Every stem
@@ -120,7 +151,12 @@ impl Default for Config {
             stem_fluff_probability: 0.1,
             stem_embargo: (Duration::from_secs(20), Duration::from_secs(50)),
             stem_epoch: Duration::from_secs(600),
+            stem_assembly_idle: Duration::from_secs(15),
             max_stems_per_minute: 120,
+            keepalive: Duration::from_secs(10),
+            link_timeout: Duration::from_secs(35),
+            link_race_window: Duration::from_secs(5),
+            link_key_rotation: None,
             max_stash_per_minute: 1024,
             max_anonymous_attachments: 16 * 1024 * 1024,
             stash_pace: (Duration::from_millis(20), Duration::from_millis(120)),
@@ -135,12 +171,16 @@ impl Default for Config {
 #[derive(Clone, Debug)]
 pub enum Event {
     Listening(String),
-    PeerConnected { peer: Digest, addr: String, inbound: bool },
-    PeerDisconnected { peer: Digest, addr: String, reason: Option<String> },
+    /// A link to `peer` came up over `medium` (the transport's name). A peer
+    /// can be connected over several media at once.
+    PeerConnected { peer: Digest, addr: String, inbound: bool, medium: String },
+    PeerDisconnected { peer: Digest, addr: String, medium: String, reason: Option<String> },
     DialFailed { addr: String, reason: String },
     Discovered { medium: Medium, addr: String },
     ObjectReceived { object: Box<VerifiedObject>, from: Digest },
     ObjectRejected { from: Digest, reason: String },
+    /// The link key changed; every link was closed and will reconnect under it.
+    LinkKeyRotated { id: Digest },
     /// An anonymous object left the stem phase on this node and is now public.
     Fluffed(Digest),
     /// Every chunk of an attachment arrived and the file matched its hash.
@@ -149,8 +189,21 @@ pub enum Event {
     AttachmentFailed { manifest: Digest, reason: String },
 }
 
+/// An added transport and the address it listens on, if any.
+type ExtraTransport = (Arc<dyn Transport>, Option<String>);
+
+/// One link to a peer. A peer may have one link per medium.
+#[derive(Clone)]
 struct PeerHandle {
     peer: Digest,
+    /// Transport name ("tcp", "ble", ...).
+    medium: &'static str,
+    /// Who dialled this link. Decides which link survives when both ends
+    /// dial each other over the same medium.
+    initiator: Digest,
+    /// Ask the link's session to end (replaced, or the link key rotated).
+    close: Arc<Notify>,
+    since: Instant,
     /// Control queue (HAVE, WANT, STEM, blob requests). Sent ahead of bulk data.
     tx: mpsc::Sender<Message>,
     /// Bulk queue (OBJECT, BLOB, STASH). Order within it is preserved.
@@ -160,9 +213,18 @@ struct PeerHandle {
 }
 
 struct Inner {
-    keypair: Keypair,
+    /// The key proven on links. Never the user's posting identity.
+    link_key: RwLock<Arc<Keypair>>,
     store: Mutex<Store>,
+    /// Default transport: addresses without a known `medium:` prefix use it.
     transport: Arc<dyn Transport>,
+    /// Further transports, each with an optional address to listen on.
+    extra: Mutex<Vec<ExtraTransport>>,
+    /// Pieces (STASH and BLOB) accepted per medium this run.
+    by_medium: Mutex<HashMap<&'static str, u64>>,
+    /// STASH pieces accepted this run, from anyone (progress signal for relays
+    /// waiting on a file's pieces).
+    stash_received: AtomicU64,
     config: Config,
     conns: Mutex<HashMap<u64, PeerHandle>>,
     dialing: Mutex<HashSet<String>>,
@@ -191,7 +253,10 @@ pub struct Node {
 
 /// Handle to a started node. Dropping it does not stop the node; call [`Running::shutdown`].
 pub struct Running {
+    /// Where the default transport listens.
     pub local_addr: Option<String>,
+    /// Every listening address, each additional transport's as `medium:addr`.
+    pub listening: Vec<String>,
     tasks: JoinSet<()>,
     shutdown_tx: watch::Sender<bool>,
 }
@@ -204,14 +269,20 @@ impl Running {
 }
 
 impl Node {
-    pub fn new(keypair: Keypair, store: Store, transport: Arc<dyn Transport>, config: Config) -> Self {
+    /// `link_key` is what this node proves to peers on every link. Pass a key
+    /// of its own, not the user's posting identity: anyone who connects learns
+    /// it.
+    pub fn new(link_key: Keypair, store: Store, transport: Arc<dyn Transport>, config: Config) -> Self {
         let (events, _) = broadcast::channel(1024);
         let (shutdown_tx, shutdown) = watch::channel(false);
         Node {
             inner: Arc::new(Inner {
-                keypair,
+                link_key: RwLock::new(Arc::new(link_key)),
                 store: Mutex::new(store),
                 transport,
+                extra: Mutex::new(Vec::new()),
+                by_medium: Mutex::new(HashMap::new()),
+                stash_received: AtomicU64::new(0),
                 config,
                 conns: Mutex::new(HashMap::new()),
                 dialing: Mutex::new(HashSet::new()),
@@ -230,8 +301,37 @@ impl Node {
         }
     }
 
+    /// The current link key (see [`Node::new`]).
     pub fn identity(&self) -> PublicKey {
-        self.inner.keypair.public()
+        link_key(&self.inner).public()
+    }
+
+    /// Switch to a fresh random link key now. Every link is closed and
+    /// reconnects under the new key, so peers see a stranger, never the old
+    /// and new keys side by side. Useful when the device changes network.
+    pub fn rotate_link_key(&self) {
+        rotate_link_key(&self.inner);
+    }
+
+    /// Add a transport (Bluetooth, Wi-Fi Direct, ...), optionally listening on
+    /// `listen`. Its addresses are written `name:addr`, where `name` is
+    /// [`Transport::name`]. Call before [`Node::start`]. Peers reachable over
+    /// several transports are connected over all of them.
+    pub fn add_transport(&self, transport: Arc<dyn Transport>, listen: Option<String>) {
+        self.inner.extra.lock().unwrap().push((transport, listen));
+    }
+
+    /// Live links as (peer, medium).
+    pub fn links(&self) -> Vec<(Digest, String)> {
+        let mut v: Vec<_> =
+            self.inner.conns.lock().unwrap().values().map(|h| (h.peer, h.medium.to_string())).collect();
+        v.sort();
+        v
+    }
+
+    /// Pieces (attachment blobs and stashed blobs) accepted per medium this run.
+    pub fn pieces_by_medium(&self) -> HashMap<String, u64> {
+        self.inner.by_medium.lock().unwrap().iter().map(|(k, v)| (k.to_string(), *v)).collect()
     }
 
     /// Register a discovery medium. Call before [`Node::start`].
@@ -318,25 +418,24 @@ impl Node {
     pub async fn start(&self) -> Result<Running> {
         let mut tasks = JoinSet::new();
         let mut local_addr = None;
+        let mut listening = Vec::new();
 
         if let Some(addr) = &self.inner.config.listen {
-            let mut listener = self.inner.transport.listen(addr).await.with_context(|| format!("listening on {addr}"))?;
+            let listener = self.inner.transport.listen(addr).await.with_context(|| format!("listening on {addr}"))?;
             let bound = listener.local_addr();
             emit(&self.inner, Event::Listening(bound.clone()));
-            local_addr = Some(bound);
-            let inner = self.inner.clone();
-            tasks.spawn(async move {
-                loop {
-                    let Ok(acc) = listener.accept().await else { continue };
-                    if inner.active.load(Ordering::Relaxed) >= inner.config.max_connections {
-                        continue; // drop: over budget
-                    }
-                    let inner = inner.clone();
-                    tokio::spawn(async move {
-                        let _ = run_connection(inner, acc.stream, acc.remote, true, None).await;
-                    });
-                }
-            });
+            local_addr = Some(bound.clone());
+            listening.push(bound);
+            tasks.spawn(accept_loop(self.inner.clone(), listener, self.inner.transport.name()));
+        }
+        let extra: Vec<_> = self.inner.extra.lock().unwrap().clone();
+        for (t, listen) in extra {
+            let Some(addr) = listen else { continue };
+            let listener = t.listen(&addr).await.with_context(|| format!("listening on {}:{addr}", t.name()))?;
+            let bound = format!("{}:{}", t.name(), listener.local_addr());
+            emit(&self.inner, Event::Listening(bound.clone()));
+            listening.push(bound);
+            tasks.spawn(accept_loop(self.inner.clone(), listener, t.name()));
         }
 
         let discoveries: Vec<_> = self.inner.discoveries.lock().unwrap().clone();
@@ -382,13 +481,72 @@ impl Node {
         tasks.spawn(fetch::pump(self.inner.clone()));
         tasks.spawn(cover_pump(self.inner.clone()));
         tasks.spawn(cache_pump(self.inner.clone()));
+        if let Some(every) = self.inner.config.link_key_rotation {
+            let inner = self.inner.clone();
+            tasks.spawn(async move {
+                loop {
+                    let jitter = rand::thread_rng().gen_range(0.9..1.1);
+                    tokio::time::sleep(every.mul_f64(jitter)).await;
+                    rotate_link_key(&inner);
+                }
+            });
+        }
 
-        Ok(Running { local_addr, tasks, shutdown_tx: self.shutdown_tx.clone() })
+        Ok(Running { local_addr, listening, tasks, shutdown_tx: self.shutdown_tx.clone() })
     }
+}
+
+async fn accept_loop(inner: Arc<Inner>, mut listener: Box<dyn Listener>, medium: &'static str) {
+    loop {
+        let Ok(acc) = listener.accept().await else { continue };
+        if inner.active.load(Ordering::Relaxed) >= inner.config.max_connections {
+            continue; // drop: over budget
+        }
+        let inner = inner.clone();
+        tokio::spawn(async move {
+            let _ = run_connection(inner, acc.stream, acc.remote, true, None, medium).await;
+        });
+    }
+}
+
+/// The transport for `addr`, the address in that transport's own terms, and
+/// its medium name. `ble:XX` goes to a transport named "ble"; an address with
+/// no known prefix goes to the default transport.
+fn resolve(inner: &Inner, addr: &str) -> (Arc<dyn Transport>, String, &'static str) {
+    if let Some((scheme, rest)) = addr.split_once(':') {
+        if let Some((t, _)) = inner.extra.lock().unwrap().iter().find(|(t, _)| t.name() == scheme) {
+            return (t.clone(), rest.to_string(), t.name());
+        }
+        if scheme == inner.transport.name() {
+            return (inner.transport.clone(), rest.to_string(), inner.transport.name());
+        }
+    }
+    (inner.transport.clone(), addr.to_string(), inner.transport.name())
 }
 
 fn emit(inner: &Inner, e: Event) {
     let _ = inner.events.send(e);
+}
+
+fn link_key(inner: &Inner) -> Arc<Keypair> {
+    inner.link_key.read().unwrap().clone()
+}
+
+fn rotate_link_key(inner: &Inner) {
+    let key = Keypair::generate();
+    let id = key.public().id();
+    *inner.link_key.write().unwrap() = Arc::new(key);
+    // Drop every link: a peer must not see the old key and the new one at once.
+    for h in inner.conns.lock().unwrap().drain().map(|(_, h)| h) {
+        h.close.notify_one();
+    }
+    inner.addr_identity.lock().unwrap().clear();
+    *inner.stem_route.lock().unwrap() = None;
+    emit(inner, Event::LinkKeyRotated { id });
+}
+
+fn keepalive_pad() -> Message {
+    Message::Pad(vec![0u8; rand::thread_rng().gen_range(16..256)])
 }
 
 fn my_hello(keypair: &Keypair, binding: &[u8; 32], role: Role, flags: u8) -> Message {
@@ -486,17 +644,20 @@ async fn run_connection(
     addr: String,
     inbound: bool,
     expected: Option<Digest>,
+    medium: &'static str,
 ) -> Result<()> {
     inner.active.fetch_add(1, Ordering::Relaxed);
     let _guard = ActiveGuard(&inner.active);
 
     let my_flags = if inner.config.relay { FLAG_ACCEPTS_STEM } else { 0 };
     let role = if inbound { Role::Responder } else { Role::Initiator };
+    // The key this link is proven with; a later rotation closes the link.
+    let key = link_key(&inner);
     let (mut rd, mut wr, peer_pk, peer_flags) = tokio::time::timeout(inner.config.handshake_timeout, async {
         let ch = secure(stream, role).await?;
         let (mut rd, mut wr) = tokio::io::split(ch.stream);
         let (pk, flags) =
-            handshake(&inner.keypair, my_flags, role, &ch.binding, expected.as_ref(), &mut rd, &mut wr).await?;
+            handshake(&key, my_flags, role, &ch.binding, expected.as_ref(), &mut rd, &mut wr).await?;
         anyhow::Ok((rd, wr, pk, flags))
     })
     .await
@@ -511,12 +672,14 @@ async fn run_connection(
     // of chunks doesn't hold up HAVE/WANT (head-of-line blocking).
     let (tx, mut rx) = mpsc::channel::<Message>(1024);
     let (bulk, mut bulk_rx) = mpsc::channel::<Message>(64);
+    let keepalive = inner.config.keepalive;
     let writer = tokio::spawn(async move {
         loop {
             let m = tokio::select! {
                 biased;
                 m = rx.recv() => m,
                 m = bulk_rx.recv() => m,
+                _ = tokio::time::sleep(keepalive) => Some(keepalive_pad()),
             };
             let Some(m) = m else { break };
             if write_message(&mut wr, &m).await.is_err() {
@@ -527,27 +690,75 @@ async fn run_connection(
 
     let conn_id = inner.next_conn.fetch_add(1, Ordering::Relaxed);
     let stem_ok = peer_flags & FLAG_ACCEPTS_STEM != 0;
-    inner.conns.lock().unwrap().insert(conn_id, PeerHandle { peer, tx: tx.clone(), bulk: bulk.clone(), stem_ok });
-    if !inbound {
-        let _ = inner.store.lock().unwrap().touch_peer(&addr, &peer);
+    let me = key.public().id();
+    let initiator = if inbound { peer } else { me };
+    let close = Arc::new(Notify::new());
+    let handle = PeerHandle {
+        peer,
+        medium,
+        initiator,
+        close: close.clone(),
+        since: Instant::now(),
+        tx: tx.clone(),
+        bulk: bulk.clone(),
+        stem_ok,
+    };
+    {
+        // One link per peer per medium.
+        // - Dial race (opened from opposite ends moments apart): both ends keep
+        //   the link opened by the smaller identity, agreeing without talking.
+        // - Otherwise the newer link wins. A peer only dials while it has no
+        //   live link, so the old one is most likely dead (it walked out of
+        //   range and back) even if we haven't noticed yet.
+        let mut conns = inner.conns.lock().unwrap();
+        if link_key(&inner).public().id() != me {
+            drop(conns);
+            writer.abort();
+            return Ok(()); // key rotated during the handshake
+        }
+        let dup = conns.iter().find(|(_, h)| h.peer == peer && h.medium == medium).map(|(id, h)| (*id, h.clone()));
+        if let Some((old_id, old)) = dup {
+            let race = old.initiator != initiator && old.since.elapsed() < inner.config.link_race_window;
+            let keep_new = !race || initiator == me.min(peer);
+            if keep_new {
+                old.close.notify_one();
+                conns.remove(&old_id);
+            } else {
+                drop(conns);
+                writer.abort();
+                return Ok(());
+            }
+        }
+        conns.insert(conn_id, handle);
     }
-    emit(&inner, Event::PeerConnected { peer, addr: addr.clone(), inbound });
+    if !inbound {
+        let _ = inner.store.lock().unwrap().touch_peer(&addr);
+    }
+    emit(&inner, Event::PeerConnected { peer, addr: addr.clone(), inbound, medium: medium.to_string() });
 
-    let result = session(&inner, conn_id, peer, &mut rd, &tx, &bulk).await;
+    let result = session(&inner, conn_id, peer, medium, &close, &mut rd, &tx, &bulk).await;
 
     inner.conns.lock().unwrap().remove(&conn_id);
     writer.abort();
     emit(
         &inner,
-        Event::PeerDisconnected { peer, addr, reason: result.as_ref().err().map(|e| format!("{e:#}")) },
+        Event::PeerDisconnected {
+            peer,
+            addr,
+            medium: medium.to_string(),
+            reason: result.as_ref().err().map(|e| format!("{e:#}")),
+        },
     );
     result
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn session<R: AsyncRead + Unpin>(
     inner: &Arc<Inner>,
     conn_id: u64,
     peer: Digest,
+    medium: &'static str,
+    close: &Notify,
     rd: &mut R,
     tx: &mpsc::Sender<Message>,
     bulk: &mpsc::Sender<Message>,
@@ -577,8 +788,12 @@ async fn session<R: AsyncRead + Unpin>(
 
     loop {
         let msg = tokio::select! {
-            m = read_message(rd) => m?,
+            m = tokio::time::timeout(inner.config.link_timeout, read_message(rd)) => match m {
+                Ok(m) => m?,
+                Err(_) => bail!("link silent for {:?}", inner.config.link_timeout),
+            },
             _ = shutdown.changed() => return Ok(()),
+            _ = close.notified() => return Ok(()), // replaced, or our link key rotated
         };
         let Some(msg) = msg else { return Ok(()) };
         match msg {
@@ -694,7 +909,16 @@ async fn session<R: AsyncRead + Unpin>(
                 }
                 inner.store.lock().unwrap().put_stem(&obj, false)?;
                 emit(inner, Event::ObjectReceived { object: Box::new(obj.clone()), from: peer });
-                route_stem(inner, &obj, Some(peer));
+                if awaiting_pieces(inner, &obj) {
+                    // Some pieces are still coming over another (slower) link.
+                    let inner = inner.clone();
+                    tokio::spawn(async move {
+                        await_pieces(&inner, &obj).await;
+                        route_stem(&inner, &obj, Some(peer));
+                    });
+                } else {
+                    route_stem(inner, &obj, Some(peer));
+                }
             }
             Message::Stash(data) => {
                 if !inner.config.relay {
@@ -716,6 +940,8 @@ async fn session<R: AsyncRead + Unpin>(
                 // Opaque to us: we can't read it or tell what it belongs to. Held
                 // as cache like any other blob; the matching STEM follows.
                 inner.store.lock().unwrap().put_blob(&data, BlobSource::Cache)?;
+                inner.stash_received.fetch_add(1, Ordering::Relaxed);
+                count_piece(inner, medium);
             }
             Message::BlobWant(ids) => {
                 let mut missing = Vec::new();
@@ -736,7 +962,9 @@ async fn session<R: AsyncRead + Unpin>(
                 }
             }
             Message::Blob(data) => {
-                if !fetch::on_blob(inner, peer, &data) {
+                if fetch::on_blob(inner, peer, &data) {
+                    count_piece(inner, medium);
+                } else {
                     fetch::on_junk(inner, conn_id);
                     strike(format!("unsolicited blob {}", Digest::of(&data).short()))?;
                 }
@@ -761,7 +989,7 @@ async fn announcer(inner: Arc<Inner>, mut last_seq: i64) {
         last_seq = last.seq;
 
         let targets: Vec<(Digest, mpsc::Sender<Message>)> =
-            inner.conns.lock().unwrap().values().map(|h| (h.peer, h.tx.clone())).collect();
+            one_link_per_peer(&inner).into_iter().map(|h| (h.peer, h.tx)).collect();
         for (peer, tx) in targets {
             let ids: Vec<Digest> = entries
                 .iter()
@@ -780,10 +1008,72 @@ async fn announcer(inner: Arc<Inner>, mut last_seq: i64) {
 
 /// Offer one object to every connected peer.
 fn broadcast_have(inner: &Inner, id: Digest) {
-    let targets: Vec<_> = inner.conns.lock().unwrap().values().map(|h| h.tx.clone()).collect();
-    for tx in targets {
-        let _ = tx.try_send(Message::Have(vec![id]));
+    for h in one_link_per_peer(inner) {
+        let _ = h.tx.try_send(Message::Have(vec![id]));
     }
+}
+
+/// A random live link to each connected peer.
+fn one_link_per_peer(inner: &Inner) -> Vec<PeerHandle> {
+    let conns = inner.conns.lock().unwrap();
+    let mut by_peer: HashMap<Digest, Vec<&PeerHandle>> = HashMap::new();
+    for h in conns.values() {
+        by_peer.entry(h.peer).or_default().push(h);
+    }
+    let mut rng = rand::thread_rng();
+    by_peer.into_values().map(|v| v[rng.gen_range(0..v.len())].clone()).collect()
+}
+
+/// Every live link to `peer` that accepts stems.
+fn stem_links(conns: &HashMap<u64, PeerHandle>, peer: Digest) -> Vec<PeerHandle> {
+    conns.values().filter(|h| h.peer == peer && h.stem_ok).cloned().collect()
+}
+
+fn count_piece(inner: &Inner, medium: &'static str) {
+    *inner.by_medium.lock().unwrap().entry(medium).or_default() += 1;
+}
+
+/// Hand `msgs` to a peer over all of `links` at once. Each link takes the next
+/// message when it is free and is paced on its own, so a fast medium carries
+/// more and an observer of one medium sees only part of the run. Returns
+/// `false` if something could not be handed over (every link failed).
+async fn push_spread(inner: &Arc<Inner>, links: &[PeerHandle], msgs: Vec<Message>) -> bool {
+    let queue = Arc::new(Mutex::new(VecDeque::from(msgs)));
+    let mut set = JoinSet::new();
+    for l in links {
+        let (inner, queue, bulk) = (inner.clone(), queue.clone(), l.bulk.clone());
+        set.spawn(async move {
+            loop {
+                let Some(m) = queue.lock().unwrap().pop_front() else { return };
+                pace(&inner.config).await;
+                if let Err(SendError(m)) = bulk.send(m).await {
+                    queue.lock().unwrap().push_front(m); // another link takes it
+                    return;
+                }
+            }
+        });
+    }
+    while set.join_next().await.is_some() {}
+    let empty = queue.lock().unwrap().is_empty();
+    empty
+}
+
+/// Send `msg` on one of `links`, trying them in random order.
+async fn send_any(links: &[PeerHandle], msg: Message, control: bool) -> bool {
+    let mut order: Vec<usize> = (0..links.len()).collect();
+    {
+        use rand::seq::SliceRandom;
+        order.shuffle(&mut rand::thread_rng());
+    }
+    let mut msg = msg;
+    for i in order {
+        let q = if control { &links[i].tx } else { &links[i].bulk };
+        match q.send(msg).await {
+            Ok(()) => return true,
+            Err(SendError(m)) => msg = m,
+        }
+    }
+    false
 }
 
 /// End the stem phase for `id` on this node and announce it.
@@ -818,17 +1108,19 @@ async fn pace(cfg: &Config) {
 
 /// The peer to pass stems to, never `exclude` (the peer we got it from).
 /// The successor is kept for a whole epoch so routes are stable.
-/// Returns its (control, bulk) queues.
-fn stem_successor(inner: &Inner, exclude: Option<Digest>) -> Option<(mpsc::Sender<Message>, mpsc::Sender<Message>)> {
+/// Returns all of its stem-capable links.
+fn stem_successor(inner: &Inner, exclude: Option<Digest>) -> Option<Vec<PeerHandle>> {
     let conns = inner.conns.lock().unwrap();
     let mut route = inner.stem_route.lock().unwrap();
     let usable = |p: &Digest| Some(*p) != exclude && conns.values().any(|h| h.peer == *p && h.stem_ok);
     if let Some((p, chosen)) = *route {
         if chosen.elapsed() < inner.config.stem_epoch && usable(&p) {
-            return conns.values().find(|h| h.peer == p).map(|h| (h.tx.clone(), h.bulk.clone()));
+            return Some(stem_links(&conns, p));
         }
     }
-    let candidates: Vec<&PeerHandle> = conns.values().filter(|h| usable(&h.peer)).collect();
+    let mut candidates: Vec<Digest> = conns.values().filter(|h| usable(&h.peer)).map(|h| h.peer).collect();
+    candidates.sort();
+    candidates.dedup();
     if candidates.is_empty() {
         return None;
     }
@@ -838,9 +1130,9 @@ fn stem_successor(inner: &Inner, exclude: Option<Digest>) -> Option<(mpsc::Sende
         t.elapsed() < inner.config.stem_epoch && conns.values().any(|h| h.peer == p && h.stem_ok)
     });
     if !current_ok {
-        *route = Some((pick.peer, Instant::now()));
+        *route = Some((pick, Instant::now()));
     }
-    Some((pick.tx.clone(), pick.bulk.clone()))
+    Some(stem_links(&conns, pick))
 }
 
 /// Sealed blobs an anonymous object must carry along the stem. `None` if we
@@ -866,17 +1158,23 @@ fn stem_blobs(inner: &Inner, obj: &VerifiedObject) -> Option<Vec<Vec<u8>>> {
 /// move yet (author with no stem-capable peer).
 ///
 /// With attachments, the sealed blobs go first (STASH, paced exactly like
-/// cover traffic) and the object after them, on the same ordered queue, so the
-/// next hop holds the whole file before it learns which post it belongs to.
+/// cover traffic, spread over every link to the next hop) and the object
+/// after them, so the next hop holds the whole file before it passes the post
+/// on.
 /// The fallback timer starts only once the object has been handed over.
 fn route_stem(inner: &Arc<Inner>, obj: &VerifiedObject, from: Option<Digest>) -> bool {
     let fluff_now = from.is_some() && rand::thread_rng().gen_bool(inner.config.stem_fluff_probability.clamp(0.0, 1.0));
     if !fluff_now {
         match stem_blobs(inner, obj) {
             Some(blobs) => {
-                if let Some((tx, bulk)) = stem_successor(inner, from) {
+                if let Some(links) = stem_successor(inner, from) {
                     if blobs.is_empty() {
-                        if tx.try_send(Message::Stem(obj.bytes().to_vec())).is_ok() {
+                        let mut order: Vec<usize> = (0..links.len()).collect();
+                        {
+                            use rand::seq::SliceRandom;
+                            order.shuffle(&mut rand::thread_rng());
+                        }
+                        if order.iter().any(|&i| links[i].tx.try_send(Message::Stem(obj.bytes().to_vec())).is_ok()) {
                             let _ = inner.store.lock().unwrap().set_embargo(&obj.id(), embargo_deadline(&inner.config));
                             return true;
                         }
@@ -884,15 +1182,11 @@ fn route_stem(inner: &Arc<Inner>, obj: &VerifiedObject, from: Option<Digest>) ->
                         let (inner, id, stem, author) = (inner.clone(), obj.id(), obj.bytes().to_vec(), from.is_none());
                         tokio::spawn(async move {
                             let pieces = blobs.len();
-                            let mut delivered = true;
-                            for b in blobs {
-                                pace(&inner.config).await;
-                                if bulk.send(Message::Stash(b)).await.is_err() {
-                                    delivered = false;
-                                    break;
-                                }
-                            }
-                            delivered = delivered && bulk.send(Message::Stem(stem)).await.is_ok();
+                            let stash = blobs.into_iter().map(Message::Stash).collect();
+                            let mut delivered = push_spread(&inner, &links, stash).await;
+                            // The STEM may overtake pieces still queued on a slower
+                            // link; the next hop waits for them (await_pieces).
+                            delivered = delivered && send_any(&links, Message::Stem(stem), false).await;
                             let store = inner.store.lock().unwrap();
                             if delivered {
                                 let _ = store.set_embargo(&id, embargo_deadline_after(&inner.config, pieces));
@@ -918,6 +1212,43 @@ fn route_stem(inner: &Arc<Inner>, obj: &VerifiedObject, from: Option<Digest>) ->
     }
     fluff(inner, &obj.id());
     true
+}
+
+/// True if `obj` carries a file we are still receiving pieces of, within the
+/// anonymous budget (over budget it can never continue, so don't wait).
+fn awaiting_pieces(inner: &Inner, obj: &VerifiedObject) -> bool {
+    let atts = &obj.object().attachments;
+    !atts.is_empty()
+        && atts.iter().map(|a| a.size).sum::<u64>() <= inner.config.max_anonymous_attachments
+        && !holds_all_pieces(inner, obj)
+}
+
+fn holds_all_pieces(inner: &Inner, obj: &VerifiedObject) -> bool {
+    let store = inner.store.lock().unwrap();
+    obj.object().attachments.iter().all(|a| {
+        matches!(store.manifest(&a.object, &a.key), Ok(Some(m)) if store.missing_chunks(&m).is_ok_and(|v| v.is_empty()))
+    })
+}
+
+/// Wait while pieces keep arriving, until `obj`'s file is complete. Gives up
+/// after `stem_assembly_idle` with no new piece, or ten minutes in all.
+async fn await_pieces(inner: &Arc<Inner>, obj: &VerifiedObject) {
+    let started = Instant::now();
+    let mut seen = inner.stash_received.load(Ordering::Relaxed);
+    let mut last_progress = Instant::now();
+    while !*inner.shutdown.borrow() && started.elapsed() < Duration::from_secs(600) {
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let now = inner.stash_received.load(Ordering::Relaxed);
+        if now != seen {
+            seen = now;
+            last_progress = Instant::now();
+            if holds_all_pieces(inner, obj) {
+                return;
+            }
+        } else if last_progress.elapsed() >= inner.config.stem_assembly_idle {
+            return;
+        }
+    }
 }
 
 /// Push our own anonymous objects into the stem, and fluff any embargo that ran out.
@@ -972,24 +1303,26 @@ async fn cover_pump(inner: Arc<Inner>) {
             (run, Duration::from_secs_f64(wait.min(86_400.0)))
         };
         tokio::time::sleep(wait).await;
-        let target = {
+        // One peer, all of its links, spread exactly like a real run.
+        let links = {
             let conns = inner.conns.lock().unwrap();
-            let ok: Vec<_> = conns.values().filter(|h| h.stem_ok).map(|h| h.bulk.clone()).collect();
-            if ok.is_empty() {
+            let peers: Vec<Digest> = conns.values().filter(|h| h.stem_ok).map(|h| h.peer).collect();
+            if peers.is_empty() {
                 continue;
             }
-            ok[rand::thread_rng().gen_range(0..ok.len())].clone()
+            stem_links(&conns, peers[rand::thread_rng().gen_range(0..peers.len())])
         };
-        for _ in 0..run {
-            pace(cfg).await;
-            let mut piece = vec![0u8; BLOB_SIZE];
-            rand::thread_rng().fill(&mut piece[..]);
-            if target.send(Message::Stash(piece)).await.is_err() {
-                break;
-            }
+        let pieces: Vec<Message> = (0..run)
+            .map(|_| {
+                let mut piece = vec![0u8; BLOB_SIZE];
+                rand::thread_rng().fill(&mut piece[..]);
+                Message::Stash(piece)
+            })
+            .collect();
+        if push_spread(&inner, &links, pieces).await {
+            let pad = vec![0u8; rand::thread_rng().gen_range(128..1024)];
+            let _ = send_any(&links, Message::Pad(pad), false).await;
         }
-        let pad = vec![0u8; rand::thread_rng().gen_range(128..1024)];
-        let _ = target.send(Message::Pad(pad)).await;
     }
 }
 
@@ -1021,9 +1354,11 @@ async fn dialer(inner: Arc<Inner>) {
     }
 }
 
+/// We already have a link to whoever answers at `addr`, over `addr`'s medium.
 fn already_connected(inner: &Inner, addr: &str) -> bool {
     let Some(id) = inner.addr_identity.lock().unwrap().get(addr).copied() else { return false };
-    inner.conns.lock().unwrap().values().any(|h| h.peer == id)
+    let medium = resolve(inner, addr).2;
+    inner.conns.lock().unwrap().values().any(|h| h.peer == id && h.medium == medium)
 }
 
 /// Dial `addr` unless a dial to it is already in flight. If `expected` is set,
@@ -1033,8 +1368,9 @@ fn spawn_dial(inner: Arc<Inner>, addr: String, expected: Option<Digest>) {
         return;
     }
     tokio::spawn(async move {
-        let failed = match inner.transport.dial(&addr).await {
-            Ok(stream) => match run_connection(inner.clone(), stream, addr.clone(), false, expected).await {
+        let (transport, native, medium) = resolve(&inner, &addr);
+        let failed = match transport.dial(&native).await {
+            Ok(stream) => match run_connection(inner.clone(), stream, addr.clone(), false, expected, medium).await {
                 Ok(()) => false,
                 Err(e) => {
                     emit(&inner, Event::DialFailed { addr: addr.clone(), reason: format!("{e:#}") });

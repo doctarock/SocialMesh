@@ -28,6 +28,40 @@ So a new medium adds **reach** without adding **trust**.
 | Audio (speaker → mic) | chirp carrying `mesh1:` / beacon | FSK modem stream | ~10–100 bytes/s | all with speaker+mic | planned |
 | Mesh radio (LoRa etc.) | — | packet stream | very low | add-on hardware | later |
 
+## Using every medium at once
+
+Two nodes that can reach each other over several media use **all of them at
+the same time**, one link per medium. A phone next to a laptop might hold a
+Bluetooth link and a Wi-Fi link to it, while both also reach a relay over the
+internet.
+
+- Each medium is a `Transport` registered on the node
+  (`Node::add_transport`). Addresses carry the medium as a prefix
+  (`ble:…`, `wifi:…`); bare `host:port` means TCP.
+- Every link is its own encrypted session. The node treats the peer as one
+  peer with several links.
+- Traffic is spread over the links:
+  - attachment pieces are requested from whichever link is least busy, so a
+    fast link carries more and a slow one still helps;
+  - anonymous files on the stem are shared out piece by piece, each link
+    paced on its own, and the relay reassembles them (it waits if the post
+    overtakes pieces still coming over a slower link);
+  - HAVE, STEM and cover-run endings go out on a random link.
+- If a link drops, pieces it hasn't taken yet go over the others, and pending
+  attachment requests are re-sent elsewhere. If both ends dial each
+  other, they agree on one link per medium without talking about it.
+
+**What it does for privacy.** Someone watching a single medium (a Bluetooth
+sniffer, a Wi-Fi monitor, an ISP) sees only part of each transfer. They can't
+count a whole file's pieces, and the run they do see is shorter than the real
+one. It does **not** defeat an observer watching several media at the same
+spot: they can line up the timing. The device also shows up on each radio it
+uses, so more media means more ways to be detected. Turning a medium off is
+always an option.
+
+**What it does for capability.** Throughput adds up across links, and a
+transfer survives losing any one of them.
+
 ## Encryption is not a transport's job
 
 A transport only has to produce a reliable byte stream. The node wraps every
@@ -78,13 +112,18 @@ format as the payload. Error detection relies on the existing content hashes.
 
 Beacons and adverts MUST NOT carry a stable identity. Identity is revealed
 only inside the handshake, to a peer you are actually connecting to, or in an
-invitation you deliberately hand someone. Every transmitting medium MUST have
+invitation you deliberately hand someone. Even then it is a **link key**,
+never the user's posting identity, and user devices rotate it daily and
+whenever they change network. A radio transport should rotate its own
+hardware address (Bluetooth address, Wi-Fi MAC) at the same moment, or the
+old address links the two keys. Every transmitting medium MUST have
 a listen-only mode (`--no-beacon`).
 
 ## Adding a medium
 
 1. Implement `Discovery` and/or `Transport`.
-2. Register it on the node (`Node::add_discovery`; multi-transport routing by
-   address scheme is the next refactor in `mesh-node`).
-3. Add an integration test using the in-memory `FakeMedium` pattern in
-   `crates/mesh-node/tests/network.rs`.
+2. Register it on the node: `Node::add_discovery` and/or
+   `Node::add_transport(transport, listen)`. Its addresses become
+   `name:addr`, where `name` is `Transport::name`.
+3. Add an integration test. `crates/mesh-node/tests/network.rs` has the
+   in-memory `FakeMedium` discovery and the `AltMedium` second transport.

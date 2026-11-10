@@ -758,10 +758,13 @@ impl Store {
         Ok(())
     }
 
-    pub fn touch_peer(&self, addr: &str, identity: &Digest) -> Result<()> {
+    /// Record a successful connection. Does not pin the identity that
+    /// answered: link keys may rotate, so only an explicit pin (an invitation,
+    /// `add_peer` with an identity) is enforced.
+    pub fn touch_peer(&self, addr: &str) -> Result<()> {
         self.db.execute(
-            "UPDATE peers SET identity = ?2, last_seen_ms = ?3 WHERE addr = ?1",
-            params![addr, identity.to_hex(), mesh_object::now_ms() as i64],
+            "UPDATE peers SET last_seen_ms = ?2 WHERE addr = ?1",
+            params![addr, mesh_object::now_ms() as i64],
         )?;
         Ok(())
     }
