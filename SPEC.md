@@ -304,10 +304,10 @@ Normative rules; rationale in docs/ORIGIN-PRIVACY.md.
 
 - **Private-origin objects** are NOT announced by their author. These are
   anonymous objects (ownerless, or signed with a thread-scoped key) and signed
-  objects whose author doesn't want the device known as theirs. The signature
-  still says who wrote a signed post; the route hides which device it came
-  from. (The reference client sends signed posts this way by default;
-  `--direct` opts out.)
+  objects whose author asks for it. Signing means choosing to be known, so
+  signed objects are normally announced directly; the private route only
+  hides which *device* a signed post came from. (Reference client:
+  `--private-route`.)
 - The author SHOULD hold a new private-origin object for a random time before
   sending it (reference: 2–30 s).
 - Routing: The author sends them as STEM to one successor

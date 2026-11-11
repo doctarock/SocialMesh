@@ -117,10 +117,11 @@ enum Cmd {
         /// Attach files whose metadata can't be stripped (PDF, video, ...) as they are.
         #[arg(long)]
         keep_metadata: bool,
-        /// Announce straight from this device instead of the private route.
-        /// Faster, but nearby peers can tell this device wrote it.
+        /// Signed posts are announced from this device: signing means being
+        /// known. This sends one by the private route instead, so it goes
+        /// public from a relay and nearby peers can't tell this device wrote it.
         #[arg(long)]
-        direct: bool,
+        private_route: bool,
     },
     /// Reply to an object.
     Reply {
@@ -139,10 +140,11 @@ enum Cmd {
         /// Attach files whose metadata can't be stripped (PDF, video, ...) as they are.
         #[arg(long)]
         keep_metadata: bool,
-        /// Announce straight from this device instead of the private route.
-        /// Faster, but nearby peers can tell this device wrote it.
+        /// Signed posts are announced from this device: signing means being
+        /// known. This sends one by the private route instead, so it goes
+        /// public from a relay and nearby peers can't tell this device wrote it.
         #[arg(long)]
-        direct: bool,
+        private_route: bool,
     },
     /// Queue an object's attachments for download. A running `mesh run` fetches
     /// them from connected peers.
@@ -263,44 +265,38 @@ async fn main() -> Result<()> {
             Ok(())
         }
         Cmd::Peer { cmd } => peer(&home, cmd).await,
-        Cmd::Publish { text, anonymous, markdown, attach, keep_metadata, direct } => {
-            if anonymous && direct {
-                bail!("--direct would announce an anonymous post from this device; it always takes the private route");
-            }
+        Cmd::Publish { text, anonymous, markdown, attach, keep_metadata, private_route } => {
             let k = load_identity(&home)?;
             let store = Store::open(&home)?;
-            let mut c = attach_files(&store, Content::post(text), &attach, !direct, keep_metadata)?;
+            let mut c = attach_files(&store, Content::post(text), &attach, anonymous || private_route, keep_metadata)?;
             if markdown {
                 c = c.markdown();
             }
             if anonymous {
                 eprintln!("note: ownerless posts cannot be edited or withdrawn; copies may persist indefinitely.");
                 save_private(&store, &create(coarsen(c), Author::Ownerless)?)
-            } else if direct {
-                save_direct(&store, &create(c, Author::Signed(&k))?)
-            } else {
+            } else if private_route {
                 save_private(&store, &create(coarsen(c), Author::Signed(&k))?)
+            } else {
+                save_direct(&store, &create(c, Author::Signed(&k))?)
             }
         }
-        Cmd::Reply { parent, text, anonymous, ownerless, attach, keep_metadata, direct } => {
-            if (anonymous || ownerless) && direct {
-                bail!("--direct would announce an anonymous reply from this device; it always takes the private route");
-            }
+        Cmd::Reply { parent, text, anonymous, ownerless, attach, keep_metadata, private_route } => {
             let k = load_identity(&home)?;
             let store = Store::open(&home)?;
             let parent_id = store.resolve(&parent)?;
             let root = thread_root(&store, parent_id)?;
-            let c = attach_files(&store, Content::post(text).reply_to(parent_id), &attach, !direct, keep_metadata)?;
+            let c = attach_files(&store, Content::post(text).reply_to(parent_id), &attach, anonymous || ownerless || private_route, keep_metadata)?;
             if ownerless {
                 save_private(&store, &create(coarsen(c), Author::Ownerless)?)
             } else if anonymous {
                 let tk = Keypair::derive_thread_key(&load_anon_secret(&home)?, &root);
                 println!("Replying as Anonymous {}", tk.public().id().short());
                 save_private(&store, &create(coarsen(c), Author::Signed(&tk))?)
-            } else if direct {
-                save_direct(&store, &create(c, Author::Signed(&k))?)
-            } else {
+            } else if private_route {
                 save_private(&store, &create(coarsen(c), Author::Signed(&k))?)
+            } else {
+                save_direct(&store, &create(c, Author::Signed(&k))?)
             }
         }
         Cmd::Feed { limit } => {
@@ -769,17 +765,16 @@ fn save_direct(store: &Store, obj: &VerifiedObject) -> Result<()> {
 /// a relay would hold them, and are limited in size because every relay on
 /// the route carries the whole file.
 fn attach_files(store: &Store, mut c: Content, files: &[PathBuf], private: bool, keep_metadata: bool) -> Result<Content> {
-    let anonymous = private;
-    let limit = if anonymous { mesh_node::Config::default().max_anonymous_attachments } else { MAX_ATTACHMENT_SIZE };
+    let limit = if private { mesh_node::Config::default().max_anonymous_attachments } else { MAX_ATTACHMENT_SIZE };
     let mut total = 0;
     for path in files {
         let len = fs::metadata(path).with_context(|| format!("reading {}", path.display()))?.len();
         total += len;
         if total > limit {
-            if anonymous {
+            if private {
                 bail!(
                     "{} would exceed the {} limit for files on the private route (every relay carries the whole file). \
-                     Use --direct to publish it from this device instead, if being known as its source is acceptable.",
+                     Publish it signed, from this device, if being known as its source is acceptable.",
                     path.display(),
                     human_size(limit)
                 );
@@ -790,7 +785,7 @@ fn attach_files(store: &Store, mut c: Content, files: &[PathBuf], private: bool,
         let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
         let media_type = guess_media_type(&name);
         let data = clean_metadata(&name, media_type, data, keep_metadata)?;
-        let source = if anonymous { BlobSource::Cache } else { BlobSource::Own };
+        let source = if private { BlobSource::Cache } else { BlobSource::Own };
         let w = store.add_file(&data, source)?;
         c = c.attach(Attachment { object: w.manifest, key: w.key, media_type: media_type.into(), size: w.size });
         println!("Attached {name} ({media_type}, {}, sealed)", human_size(w.size));

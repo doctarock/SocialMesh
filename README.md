@@ -46,9 +46,10 @@ mesh feed
 mesh object show <id>
 ```
 
-Every post, signed or not, leaves by the private route: your device holds it for a few seconds, hands it
-to a relay, and it becomes public from somewhere else, so nobody near you can tell your phone wrote it.
-`--direct` announces straight from your device instead (faster; needed for files over 16 MiB).
+Anonymous posts leave by the private route: your device holds them for a few seconds, hands them to a
+relay, and they become public from somewhere else, so nobody near you can tell your phone wrote them.
+Signed posts are announced from your device (you chose to be known). Add `--private-route` to a signed
+post if you want your name on it but not your location.
 
 Attachments (up to ~124 MiB; sealed with a random key in the post, stored by others as opaque 64 KiB pieces):
 

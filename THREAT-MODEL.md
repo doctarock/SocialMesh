@@ -57,15 +57,13 @@ mesh: once fluffed, every post is public to every node. Specifically:
   device pseudonym, not the owner's posting identity. A stable link key (for
   invitations) lets peers recognise the same device over time; a rotating one
   limits that to a day or one network.
-- **Who first offers a `--direct` post.** Signed posts take the private route
-  by default and become public from a relay, not the author's device. With
-  `--direct` the author's device announces the post itself. A peer connected
-  to it (anyone nearby, for a phone) then sees a new post signed by X appear
-  from that device first, and can conclude "this device is X".
-- **A signed identity's own history.** The private route hides which device
-  posted, not who: everything signed by X is linkable to X by design. Someone
-  who already knows a device belongs to X learns nothing new; someone
-  watching a device can't use X's posts to confirm it is X's.
+- **Which device a signed post came from.** Signing means choosing to be
+  known, so signed posts are announced from the author's device. A peer
+  connected to it (anyone nearby, for a phone) sees a new post signed by X
+  appear there first, and can conclude "this device is X's". That is by
+  design. `--private-route` sends a signed post the anonymous way when the
+  author wants their identity known but not their device. Anonymous posts
+  always go the private way.
 - **An unpinned dialler's identity.** It is revealed to whichever node answers,
   once that node has proved *some* identity. Pinned dials and LAN sightings
   with an identity hint are protected; plain addresses are not.
