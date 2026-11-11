@@ -71,6 +71,13 @@ mesh: once fluffed, every post is public to every node. Specifically:
   could in principle be decrypted by a future quantum computer. A hybrid
   key exchange (e.g. ML-KEM + X25519) is a candidate for a future version.
 
+### Sound (datagram mode)
+
+Sound is unencrypted and anyone in earshot can record it, so only public
+posts are ever sent that way (embargoed ones are refused). The transmitting
+device can be located by ear or with a few microphones. Receiving is silent
+and can't be detected.
+
 ### Several media at once
 
 Peers connected over several media spread each transfer across them

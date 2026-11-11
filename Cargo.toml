@@ -19,6 +19,8 @@ mesh-node = { path = "crates/mesh-node" }
 mesh-discovery = { path = "crates/mesh-discovery" }
 mesh-transport-tcp = { path = "transports/mesh-transport-tcp" }
 mesh-transport-file = { path = "transports/mesh-transport-file" }
+mesh-datagram = { path = "crates/mesh-datagram" }
+mesh-transport-audio = { path = "transports/mesh-transport-audio" }
 
 anyhow = "1"
 thiserror = "2"
@@ -34,3 +36,5 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tempfile = "3"
 snow = "0.9"
 chacha20poly1305 = "0.10"
+raptorq = "2.0"
+hound = "3.5"

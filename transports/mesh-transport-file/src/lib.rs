@@ -32,6 +32,20 @@ pub fn export(store: &Store, relay_enabled: bool, out: &mut impl Write) -> Resul
     Ok(ids.len())
 }
 
+/// A bundle holding exactly `objects`, in memory (for audio and other
+/// datagram media, which carry a bundle as their payload).
+pub fn bundle(objects: &[VerifiedObject]) -> Vec<u8> {
+    let mut out = Vec::new();
+    out.extend_from_slice(BUNDLE_MAGIC);
+    out.push(BUNDLE_VERSION);
+    out.extend_from_slice(&(objects.len() as u32).to_be_bytes());
+    for o in objects {
+        out.extend_from_slice(&(o.bytes().len() as u32).to_be_bytes());
+        out.extend_from_slice(o.bytes());
+    }
+    out
+}
+
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct ImportReport {
     pub new: usize,

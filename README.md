@@ -73,6 +73,14 @@ mesh export posts.bundle
 mesh import posts.bundle
 ```
 
+By sound, one way: anything that carries voice (a phone held to a speaker, a call, a walkie-talkie,
+a radio) can carry posts. Missed or noisy parts are made up from the rest.
+
+```sh
+mesh audio send rally.wav --latest 2    # newest public posts as sound (about 30 s per short post)
+mesh audio receive recording.wav        # any recording, any sample rate; every post is verified
+```
+
 Use `--home <dir>` (or `MESH_HOME`) to run several nodes on one machine. `mesh run --no-beacon` listens for nearby nodes without announcing yourself.
 
 # Distributed Social Protocol v0.1

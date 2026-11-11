@@ -25,7 +25,7 @@ So a new medium adds **reach** without adding **trust**.
 | Bluetooth LE | BLE advertisement w/ service UUID | GATT / L2CAP CoC stream | ~10–100 KB/s | Android, iOS, desktop central-only | planned |
 | NFC | NDEF tag/tap carrying `mesh1:` | — (hands off to BLE/Wi-Fi) | tiny | Android, iOS (read) | planned |
 | QR code | camera scan of `mesh1:` | — | tiny | all with camera | planned |
-| Audio (speaker → mic) | chirp carrying `mesh1:` / beacon | FSK modem stream | ~10–100 bytes/s | all with speaker+mic | planned |
+| Audio (speaker → mic, calls, radio) | — | 16-FSK modem + fountain-coded datagrams, one way | 25–50 bytes/s | all with speaker+mic | **WAV files done**; live speaker/mic next |
 | Mesh radio (LoRa etc.) | — | packet stream | very low | add-on hardware | later |
 
 ## Using every medium at once
@@ -101,12 +101,25 @@ over it unchanged.
 devices then sync over BLE or Wi-Fi. NFC therefore implements `Discovery` only,
 and its sightings carry an identity.
 
-**Audio.** A fallback for when no radio is usable: an FSK/chirp modem over
-speaker and microphone, built from mature DSP code rather than invented
-crypto. Realistic throughput is tens of bytes per second, so its main use is
-carrying a `mesh1:` invitation (~80 bytes) between two phones in a room.
-Bulk transfer at that rate is possible only for short text, using the bundle
-format as the payload. Error detection relies on the existing content hashes.
+**Audio (done, as WAV files).** One-way: `mesh audio send` turns public
+posts into a sound file; `mesh audio receive` reads them back from any
+recording. Anything that carries voice can carry it: a phone held to a
+speaker, a phone call, a walkie-talkie, a PA system, a radio broadcast, a
+voice message. Tones sit in the voice band (1–2.5 kHz).
+
+- Payload: an offline bundle, cut into fountain-coded frames (SPEC.md §8).
+  Any set of frames slightly larger than the bundle rebuilds it, so a cough,
+  a dropout or tuning in late only costs time.
+- Speed: 200 bit/s (robust) or 400 bit/s (`--fast`). One short post with
+  50% spare frames is about 15 s fast, 30 s robust. Text only.
+- Tested against white noise: robust decodes every frame down to −3 dB
+  signal-to-noise, fast to 0 dB; plus 48 kHz recordings, gain changes and
+  dropouts. Real rooms add echo, which still needs testing on devices.
+- Not encrypted, and the transmitter can be located by ear. Only public
+  posts are sent; posts still on the private route are refused.
+
+Next: live speaker/microphone, and the same datagram frames over LoRa and
+animated QR codes.
 
 ## Privacy rule for every medium
 

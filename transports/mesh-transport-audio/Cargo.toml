@@ -1,0 +1,16 @@
+[package]
+name = "mesh-transport-audio"
+description = "Sound modem for SocialMesh datagram frames: speaker to microphone, phone calls, radio"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+hound.workspace = true
+anyhow.workspace = true
+
+[dev-dependencies]
+mesh-datagram.workspace = true
+rand.workspace = true

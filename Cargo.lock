@@ -502,6 +502,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7f24254aa9a54b5c858eaee2f5bccdb46aaf0e486a595ed5fd8f86ba55232a70"
 
 [[package]]
+name = "hound"
+version = "3.5.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "62adaabb884c94955b19907d60019f4e145d091c75345379e70d1ee696f7854f"
+
+[[package]]
 name = "inout"
 version = "0.1.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -574,11 +580,13 @@ dependencies = [
  "clap",
  "hex",
  "mesh-crypto",
+ "mesh-datagram",
  "mesh-discovery",
  "mesh-node",
  "mesh-object",
  "mesh-store",
  "mesh-transport",
+ "mesh-transport-audio",
  "mesh-transport-file",
  "mesh-transport-tcp",
  "tokio",
@@ -593,6 +601,16 @@ dependencies = [
  "ed25519-dalek",
  "hex",
  "rand",
+ "thiserror",
+]
+
+[[package]]
+name = "mesh-datagram"
+version = "0.1.0"
+dependencies = [
+ "blake3",
+ "rand",
+ "raptorq",
  "thiserror",
 ]
 
@@ -661,6 +679,16 @@ name = "mesh-transport"
 version = "0.1.0"
 dependencies = [
  "tokio",
+]
+
+[[package]]
+name = "mesh-transport-audio"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "hound",
+ "mesh-datagram",
+ "rand",
 ]
 
 [[package]]
@@ -827,6 +855,12 @@ checksum = "ec0be4795e2f6a28069bec0b5ff3e2ac9bafc99e6a9a7dc3547996c5c816922c"
 dependencies = [
  "getrandom 0.2.17",
 ]
+
+[[package]]
+name = "raptorq"
+version = "2.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4d4215fb79ef19442a0c71616aabb0715a386e6a16ed9031775ee3e3f20e7502"
 
 [[package]]
 name = "regex-automata"

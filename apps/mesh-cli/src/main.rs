@@ -176,6 +176,42 @@ enum Cmd {
     Export { file: PathBuf },
     /// Verify and import objects from an offline bundle file.
     Import { file: PathBuf },
+    /// Move posts by sound, one way: write them as audio to play near another
+    /// device (or over a call, radio or PA), or read them from a recording.
+    Audio {
+        #[command(subcommand)]
+        cmd: AudioCmd,
+    },
+}
+
+#[derive(Subcommand)]
+enum AudioCmd {
+    /// Write public posts as a WAV file. Anyone who hears it can read them,
+    /// so only posts that are already public are sent.
+    Send {
+        /// Where to write the sound.
+        out: PathBuf,
+        /// Posts to send (full or short IDs). Default: the newest public ones.
+        #[arg(long = "id")]
+        ids: Vec<String>,
+        /// How many of the newest public posts to send when no --id is given.
+        #[arg(long, default_value_t = 1)]
+        latest: usize,
+        /// 400 bit/s instead of 200: for cables, calls and quiet rooms.
+        #[arg(long)]
+        fast: bool,
+        /// Extra frames, in percent, so the post survives missed or damaged ones.
+        #[arg(long, default_value_t = 50)]
+        extra: usize,
+    },
+    /// Read posts from a recording (WAV, any sample rate). Every post is
+    /// verified before it is kept.
+    Receive {
+        input: PathBuf,
+        /// The sender used --fast.
+        #[arg(long)]
+        fast: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -397,11 +433,83 @@ async fn main() -> Result<()> {
             println!("Exported {n} objects to {}", file.display());
             Ok(())
         }
+        Cmd::Audio { cmd } => audio(&home, cmd),
         Cmd::Import { file } => {
             let store = Store::open(&home)?;
             let mut f = std::io::BufReader::new(fs::File::open(&file)?);
             let r = mesh_transport_file::import(&store, &mut f)?;
             println!("Imported {} new, {} already present, {} rejected", r.new, r.duplicate, r.rejected);
+            Ok(())
+        }
+    }
+}
+
+/// Symbol bytes per sound frame: small frames lose less to a burst of noise.
+const AUDIO_SYMBOL: u16 = 64;
+
+fn audio(home: &Path, cmd: AudioCmd) -> Result<()> {
+    use mesh_transport_audio::{demodulate, modulate, read_wav, write_wav, Profile};
+    let store = Store::open(home)?;
+    match cmd {
+        AudioCmd::Send { out, ids, latest, fast, extra } => {
+            let profile = if fast { Profile::FAST } else { Profile::ROBUST };
+            let ids: Vec<Digest> = if ids.is_empty() {
+                let all = store.shareable_ids(true)?;
+                all[all.len().saturating_sub(latest)..].to_vec()
+            } else {
+                ids.iter().map(|i| store.resolve(i)).collect::<Result<_, _>>()?
+            };
+            if ids.is_empty() {
+                bail!("nothing public to send yet");
+            }
+            let mut objects = Vec::new();
+            for id in &ids {
+                // Embargoed (still on the private route) or otherwise unshareable: never broadcast.
+                if !store.shareable(id, true)? {
+                    bail!("{} isn't public yet; sending it by sound would reveal this device as its source", id.short());
+                }
+                objects.push(store.get(id)?.context("object not stored locally")?);
+            }
+            let payload = mesh_transport_file::bundle(&objects);
+            let mut tx = mesh_datagram::Sender::new(&payload, AUDIO_SYMBOL)?;
+            let k = tx.source_frames();
+            let frames = tx.frames(k + k * extra / 100 + 2);
+            let samples = modulate(&frames, &profile)?;
+            write_wav(&out, &samples, &profile)?;
+            let secs = samples.len() as f32 / profile.sample_rate as f32;
+            println!(
+                "Wrote {}: {} post(s), {} bytes, {} frames ({k} needed), {}:{:02} at {} bit/s",
+                out.display(),
+                objects.len(),
+                payload.len(),
+                frames.len(),
+                secs as u32 / 60,
+                secs as u32 % 60,
+                profile.bit_rate()
+            );
+            eprintln!("note: anyone who hears this can read these posts (they are public already).");
+            Ok(())
+        }
+        AudioCmd::Receive { input, fast } => {
+            let profile = if fast { Profile::FAST } else { Profile::ROBUST };
+            let samples = read_wav(&input, &profile)?;
+            let heard = demodulate(&samples, &profile);
+            let mut rx = mesh_datagram::Receiver::default();
+            let mut decoded = 0;
+            for f in &heard {
+                if let Some(payload) = rx.push(f) {
+                    decoded += 1;
+                    let r = mesh_transport_file::import(&store, &mut payload.as_slice())?;
+                    println!("Received {} new post(s), {} already here, {} rejected", r.new, r.duplicate, r.rejected);
+                }
+            }
+            println!("Heard {} frames ({} damaged).", heard.len(), rx.rejected);
+            if decoded == 0 {
+                if heard.is_empty() {
+                    bail!("no SocialMesh sound found{}", if fast { "" } else { " (if the sender used --fast, add --fast)" });
+                }
+                bail!("not enough intact frames to rebuild the posts; record more of the transmission");
+            }
             Ok(())
         }
     }

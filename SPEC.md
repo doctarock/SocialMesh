@@ -411,3 +411,45 @@ Addresses are hints; the identity is pinned during the handshake. The
 identity in an invitation is the node's (stable) **link key** (§5.0), not
 its owner's posting identity. Addresses stored without an explicit identity
 are not pinned to whichever key first answers, because link keys may rotate.
+
+## 8. Datagram mode (one-way and lossy media)
+
+For media with no reliable two-way stream: sound, LoRa, QR sequences,
+broadcasts. There is no handshake and no link encryption, so a sender MUST
+only send objects that are already public (never embargoed ones).
+
+### 8.1 Frames
+
+The payload is an offline bundle (§6), erasure-coded with RaptorQ (RFC 6330)
+as one source block with alignment 8. Every frame stands alone:
+
+```
+"SD" | version u8 = 1 | symbol_size/8 u8 | transfer [4] | payload_len u32
+     | packet_id [4] (RFC 6330 payload ID) | symbol [symbol_size] | check [4]
+```
+
+- `transfer` = first 4 bytes of BLAKE3(payload). Frames group by it; the
+  rebuilt payload MUST match it.
+- `check` = first 4 bytes of BLAKE3 over the frame before it. A frame that
+  fails is dropped (an erasure).
+- `payload_len` ≤ 1 MiB.
+- A sender emits the source symbols, then repair symbols, as many as the
+  medium allows. A receiver can start at any frame and needs about as many
+  intact frames as there are source symbols (a couple more at most).
+- Receivers bound how many unfinished transfers they hold (reference: 16).
+- Recovered bundles are imported with full object verification.
+
+### 8.2 Sound modem
+
+16-FSK, one 4-bit symbol per tone, tone *k* at 1 000 + 100·*k* Hz, sampled
+at 8 kHz, continuous phase. Profiles: ROBUST, 160 samples per symbol
+(200 bit/s); FAST, 80 (400 bit/s). On air:
+
+```
+preamble (16 symbols: 0 9 3 14 6 1 12 7 15 4 10 2 13 8 5 11)
+| length u8 | frame bytes (high nibble first) | 2 symbols of silence
+```
+
+Receivers find preambles by the share of in-band tone energy on the expected
+tone (noise ≈ 1/16), and read each symbol from its last three quarters (echo
+guard). Reference symbol size per frame: 64 bytes.
