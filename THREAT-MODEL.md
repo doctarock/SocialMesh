@@ -86,6 +86,20 @@ fewer pieces, a shorter run. An observer of several media in the same place
 (a radio sniffer that covers both Bluetooth and Wi-Fi) can line the parts up
 by timing. Each radio a device uses is another way to notice it is there.
 
+### Bluetooth presence
+
+A SocialMesh advert carries no identity, but it is a fixed service UUID: a
+Bluetooth scanner nearby learns that someone in range runs SocialMesh, and
+can follow that radio until its address changes. Addresses and advert
+tokens change together with the link key (daily and on network change), so
+an observer can't join the periods up by address, but may by being near the
+same person both times. A phone that must not be noticed should run
+listen-only (`--no-beacon`): it never advertises, only scans and connects,
+and becomes visible to the peers it links to (and anyone sniffing that
+link) only while linked. Signal strength and direction finding can locate
+any transmitting radio; this is a property of radio, not something the
+protocol can hide.
+
 ### Presence on a local network
 
 LAN beacons do not contain an identity. They do reveal that *a* SocialMesh node

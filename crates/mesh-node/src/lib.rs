@@ -112,6 +112,8 @@ pub struct Config {
     /// Replace the link key this often (with ±10% jitter), closing every link
     /// so no peer sees the old and new key side by side. `None` keeps it.
     pub link_key_rotation: Option<Duration>,
+    /// Forget a discovered address this long after it was last sighted.
+    pub discovered_ttl: Duration,
     /// STASH blobs (64 KiB each) accepted per peer per minute.
     pub max_stash_per_minute: u32,
     /// Largest total attachment size an anonymous object may carry. Every stem
@@ -166,6 +168,7 @@ impl Default for Config {
             link_timeout: Duration::from_secs(35),
             link_race_window: Duration::from_secs(5),
             link_key_rotation: None,
+            discovered_ttl: Duration::from_secs(180),
             max_stash_per_minute: 1024,
             max_anonymous_attachments: 16 * 1024 * 1024,
             stash_pace: (Duration::from_millis(20), Duration::from_millis(120)),
@@ -243,7 +246,8 @@ struct Inner {
     backoff: Mutex<HashMap<String, (Instant, Duration)>>,
     /// Addresses learned from discovery this run (not persisted), with the
     /// identity pinned by the sighting if the medium carried one.
-    discovered: Mutex<HashMap<String, Option<Digest>>>,
+    /// Sighted addresses, with when they were last sighted.
+    discovered: Mutex<HashMap<String, (Option<Digest>, Instant)>>,
     /// Identity last proven at each outbound address, to avoid redundant dials.
     addr_identity: Mutex<HashMap<String, Digest>>,
     discoveries: Mutex<Vec<Arc<dyn Discovery>>>,
@@ -462,10 +466,9 @@ impl Node {
             let port = local_addr.as_deref().and_then(|a| a.rsplit_once(':')).and_then(|(_, p)| p.parse().ok());
             // A loopback-only listener can't be reached from the LAN, so don't advertise it.
             let loopback = local_addr.as_deref().is_some_and(|a| a.starts_with("127.") || a.starts_with("[::1]"));
-            let beacon = match (self.inner.config.beacon && !loopback, port) {
-                (true, Some(port)) => Some(Beacon { instance: random_bytes(), port }),
-                _ => None,
-            };
+            // Port 0: nothing reachable over IP, but radio media still announce.
+            let port = if loopback { 0 } else { port.unwrap_or(0) };
+            let beacon = self.inner.config.beacon.then(|| Beacon { instance: random_bytes(), port });
             let (tx, mut rx) = mpsc::channel::<Sighting>(256);
             for d in discoveries {
                 let tx = tx.clone();
@@ -481,7 +484,7 @@ impl Node {
                         if d.len() >= 1024 && !d.contains_key(&s.addr) {
                             continue; // bounded: a hostile medium can't grow this forever
                         }
-                        d.insert(s.addr.clone(), s.identity).is_none()
+                        d.insert(s.addr.clone(), (s.identity, Instant::now())).is_none()
                     };
                     if fresh {
                         emit(&inner, Event::Discovered { medium: s.medium, addr: s.addr.clone() });
@@ -562,6 +565,11 @@ fn rotate_link_key(inner: &Inner) {
     }
     inner.addr_identity.lock().unwrap().clear();
     *inner.stem_route.lock().unwrap() = None;
+    // Radios change their hardware address too, or it would link the two keys.
+    inner.transport.rotate_address();
+    for (t, _) in inner.extra.lock().unwrap().iter() {
+        t.rotate_address();
+    }
     emit(inner, Event::LinkKeyRotated { id });
 }
 
@@ -1413,8 +1421,13 @@ async fn dialer(inner: Arc<Inner>) {
     loop {
         let stored = inner.store.lock().unwrap().peers().unwrap_or_default();
         let mut targets: Vec<(String, Option<Digest>)> = stored.into_iter().map(|p| (p.addr, p.identity)).collect();
-        targets.extend(inner.discovered.lock().unwrap().iter().map(|(a, i)| (a.clone(), *i)));
         let now = Instant::now();
+        {
+            // Sightings go stale: radio addresses rotate and people walk away.
+            let mut d = inner.discovered.lock().unwrap();
+            d.retain(|_, (_, seen)| now.duration_since(*seen) < inner.config.discovered_ttl);
+            targets.extend(d.iter().map(|(a, (i, _))| (a.clone(), *i)));
+        }
         for (addr, expected) in targets {
             let waiting = inner.backoff.lock().unwrap().get(&addr).is_some_and(|(at, _)| now < *at);
             if !waiting && !already_connected(&inner, &addr) {

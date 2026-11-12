@@ -32,4 +32,9 @@ pub trait Transport: Send + Sync {
     fn name(&self) -> &'static str;
     fn dial<'a>(&'a self, addr: &'a str) -> BoxFuture<'a, io::Result<Stream>>;
     fn listen<'a>(&'a self, addr: &'a str) -> BoxFuture<'a, io::Result<Box<dyn Listener>>>;
+    /// The node has just replaced its link key. A radio transport changes its
+    /// hardware address and anything else it broadcasts, so the old and new
+    /// keys can't be tied together by an observer. Media without such an
+    /// address do nothing.
+    fn rotate_address(&self) {}
 }

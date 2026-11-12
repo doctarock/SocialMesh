@@ -22,7 +22,7 @@ So a new medium adds **reach** without adding **trust**.
 | LAN / Wi-Fi (same network) | UDP broadcast beacon | TCP | high | all | **done** |
 | Offline file (USB, SD, email) | — | bundle import/export | any | all | **done** |
 | Wi-Fi without a router | Wi-Fi Aware / Direct | TCP over P2P link | high | Android (Aware/Direct), Windows (Direct) | planned |
-| Bluetooth LE | BLE advertisement w/ service UUID | GATT / L2CAP CoC stream | ~10–100 KB/s | Android, iOS, desktop central-only | planned |
+| Bluetooth LE | BLE advertisement w/ service UUID | L2CAP CoC stream / GATT pipe | ~10–100 KB/s | Android, iOS, desktop | **core done** (simulated radio); platform drivers next |
 | NFC | NDEF tag/tap carrying `mesh1:` | — (hands off to BLE/Wi-Fi) | tiny | Android, iOS (read) | planned |
 | QR code | camera scan of `mesh1:` | — | tiny | all with camera | planned |
 | Audio (speaker → mic, calls, radio) | — | 16-FSK modem + fountain-coded datagrams, one way | 25–50 bytes/s | all with speaker+mic | **WAV files done**; live speaker/mic next |
@@ -84,12 +84,38 @@ site having to understand it. Next: a WebSocket transport, so nodes behind
 restrictive firewalls, and eventually browser nodes, can be reached through
 any ordinary web host. Any such host is optional, never mandatory.
 
-**Bluetooth LE.** Advertise a fixed SocialMesh service UUID with **no
-identity** (same rule as LAN beacons), plus a rotating random token. Discovery
-reports `ble:<device-address>`; the BLE transport opens an L2CAP
-connection-oriented channel (or a GATT fallback) and exposes it as a `Stream`.
-Desktop Bluetooth libraries can usually *scan* but not *advertise*, so phones
-are the main BLE peers. Fine for text posts; too slow for large media.
+**Bluetooth LE (core done; platform drivers next).** Wire details are in
+SPEC.md §9. Nodes advertise the SocialMesh service UUID with 10 bytes:
+version, L2CAP channel number and a random token. There is **no identity**
+in the advert. Phones in range find each other and link up with nobody
+being told anything: the node treats an advert like a LAN beacon.
+
+- **One link per pair.** When both phones advertise, the one with the
+  smaller token connects (the other steps in after 20 s if nothing
+  happened). A phone already linked to a device doesn't report it again.
+- **Streams.** Links are L2CAP connection-oriented channels where the
+  platform has them, otherwise a GATT pipe (write / notify). Either way the
+  crate cuts the node's stream into packets that fit the link and joins
+  them back, and the node's secure channel runs over it as on any medium.
+- **Address rotation.** When the link key rotates (daily, and on network
+  change) the radio switches to a new random address and the advert to a
+  new token, in the same moment.
+- **Listen-only.** `--no-beacon` means the radio never advertises; it scans
+  and connects, and nobody nearby can tell it is there until it does.
+
+The radio itself is driven by a **host driver**, because every platform's
+Bluetooth API is different and phones expose it only to the app's own
+language. The driver gets commands (`Listen`, `Advertise`, `Scan`,
+`Connect`, `Send`, `Close`, `RotateAddress`) and reports events (`Advert`,
+`Incoming`, `Connected`, `Data`, `Closed`, …). That's everything a Kotlin
+(Android), Swift (iOS), WinRT (Windows) or BlueZ (Linux) driver has to
+implement; the rest lives in `mesh-transport-ble`. A simulated driver
+(`sim::SimAir`: devices on a plane, range, packet size, throughput) runs the
+tests: discovery, three-hop relaying between phones out of range of each
+other, walking out of range and back, listen-only phones, address rotation,
+and a 150 KB file over 64-byte packets.
+
+Fine for text posts and small images; large media wants Wi-Fi.
 
 **Wi-Fi Aware / Wi-Fi Direct.** The best proximity medium where available.
 Peers find each other and form a direct high-bandwidth link with no access

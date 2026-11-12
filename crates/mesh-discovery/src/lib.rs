@@ -67,7 +67,8 @@ pub struct Sighting {
 pub struct Beacon {
     /// Random per-run value, used only to ignore our own beacons.
     pub instance: [u8; 16],
-    /// Port of the transport listener peers should dial.
+    /// Port of the IP listener peers should dial, or 0 if none is reachable
+    /// (media that don't use IP announce regardless).
     pub port: u16,
 }
 
@@ -143,7 +144,8 @@ impl Discovery for LanDiscovery {
         Box::pin(async move {
             let sock = Arc::new(bind_shared_udp(self.port)?);
 
-            let sender = beacon.map(|b| {
+            // Port 0: nothing to announce on the LAN (other media still may).
+            let sender = beacon.filter(|b| b.port != 0).map(|b| {
                 let sock = sock.clone();
                 let dest = SocketAddr::V4(SocketAddrV4::new(self.target, self.port));
                 let interval = self.interval;

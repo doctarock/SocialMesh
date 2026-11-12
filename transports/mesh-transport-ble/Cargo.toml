@@ -1,0 +1,21 @@
+[package]
+name = "mesh-transport-ble"
+description = "Bluetooth LE transport and discovery for SocialMesh, driven by a per-platform radio host"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+mesh-transport.workspace = true
+mesh-discovery.workspace = true
+tokio.workspace = true
+rand.workspace = true
+
+[dev-dependencies]
+mesh-node.workspace = true
+mesh-store.workspace = true
+mesh-object.workspace = true
+mesh-crypto.workspace = true
+tempfile.workspace = true

@@ -453,3 +453,56 @@ preamble (16 symbols: 0 9 3 14 6 1 12 7 15 4 10 2 13 8 5 11)
 Receivers find preambles by the share of in-band tone energy on the expected
 tone (noise ≈ 1/16), and read each symbol from its last three quarters (echo
 guard). Reference symbol size per frame: 64 bytes.
+
+## 9. Bluetooth LE
+
+A link over Bluetooth LE is an ordinary transport stream (§5): the secure
+channel runs over it unchanged. Addresses are written `ble:<device>`, where
+`<device>` is whatever the platform calls the remote radio.
+
+### 9.1 Advert
+
+Nodes that accept links advertise, connectable, the service UUID
+`191e3b36-5476-45bf-82eb-a2c4070948e7` with 10 bytes of service data:
+
+```
+version u8 = 1 | flags u8 = 0 | psm u16 | token [6]
+```
+
+- `psm`: the L2CAP channel accepting links, or 0 if only the GATT pipe
+  (§9.2) is offered.
+- `token`: random. Replaced whenever the radio address changes.
+- Receivers MUST ignore data with another version, and accept longer data
+  (later fields are appended).
+- The advert MUST NOT contain anything that identifies the node or its user,
+  including the link key. Flags AD + service data fit a legacy 31-byte
+  advert.
+- A platform that can't put service data in an advert (iOS) advertises the
+  UUID alone and serves the same 10 bytes in the readable characteristic
+  `191e3b39-5476-45bf-82eb-a2c4070948e7`.
+- A listen-only node (`beacon` off) never advertises; it scans and connects.
+
+### 9.2 Links
+
+Preferred: an L2CAP connection-oriented channel on the advertised `psm`.
+Otherwise, the **GATT pipe** inside the SocialMesh service:
+
+- `191e3b37-…948e7` (RX): the central writes without response;
+- `191e3b38-…948e7` (TX): the peripheral notifies.
+
+Both carry the stream as consecutive byte chunks of at most ATT_MTU − 3
+bytes, in order. There is no framing; a disconnect ends the stream.
+
+### 9.3 Who connects
+
+When both ends advertise, the end with the numerically smaller token
+connects. The other end connects anyway if no link appeared within 20 s of
+first hearing the peer. A peer heard without a token is always connected to.
+A node reports a device to itself at most every 30 s, and never while a link
+to it is open. A device not heard for 60 s is not dialled.
+
+### 9.4 Address rotation
+
+Whenever the node replaces its link key (§5.0) the radio MUST switch to a
+new random address and the advert MUST get a new token, so an observer
+can't link the old key to the new one by address.

@@ -81,6 +81,11 @@ mesh audio send rally.wav --latest 2    # newest public posts as sound (about 30
 mesh audio receive recording.wav        # any recording, any sample rate; every post is verified
 ```
 
+Bluetooth LE: phones in range find each other and link up by themselves, with no identity in the
+advert and the radio address changing whenever the link key does. The protocol side is done and tested
+on a simulated radio (`mesh-transport-ble`); each platform needs a small driver for its Bluetooth API
+(Android, iOS, Windows, Linux), which is next. See [docs/TRANSPORTS.md](docs/TRANSPORTS.md).
+
 Use `--home <dir>` (or `MESH_HOME`) to run several nodes on one machine. `mesh run --no-beacon` listens for nearby nodes without announcing yourself.
 
 # Distributed Social Protocol v0.1

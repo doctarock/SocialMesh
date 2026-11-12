@@ -692,6 +692,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "mesh-transport-ble"
+version = "0.1.0"
+dependencies = [
+ "mesh-crypto",
+ "mesh-discovery",
+ "mesh-node",
+ "mesh-object",
+ "mesh-store",
+ "mesh-transport",
+ "rand",
+ "tempfile",
+ "tokio",
+]
+
+[[package]]
 name = "mesh-transport-file"
 version = "0.1.0"
 dependencies = [
