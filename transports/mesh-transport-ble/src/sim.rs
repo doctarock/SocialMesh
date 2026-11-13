@@ -105,6 +105,12 @@ impl SimAir {
     /// Put a new device with a radio at `(x, y)`.
     pub fn add(&self, x: f64, y: f64) -> (BleRadio, SimDevice) {
         let (radio, host) = BleRadio::new();
+        (radio, self.attach(host, x, y))
+    }
+
+    /// Drive a radio created elsewhere (for example one reached through the
+    /// byte encoding in [`crate::codec`], as a phone app would).
+    pub fn attach(&self, host: crate::Host, x: f64, y: f64) -> SimDevice {
         let idx = {
             let mut air = self.0.lock().unwrap();
             air.slots.push(Some(Slot {
@@ -119,7 +125,7 @@ impl SimAir {
             air.slots.len() - 1
         };
         tokio::spawn(drive(self.0.clone(), idx, host.commands));
-        (radio, SimDevice { air: self.0.clone(), idx })
+        SimDevice { air: self.0.clone(), idx }
     }
 }
 

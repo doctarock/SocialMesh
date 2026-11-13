@@ -30,6 +30,7 @@ use std::time::{Duration, Instant};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::{broadcast, mpsc, oneshot, watch};
 
+pub mod codec;
 pub mod sim;
 
 /// The SocialMesh GATT service, advertised by every node that accepts links.

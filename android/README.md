@@ -1,0 +1,56 @@
+# SocialMesh for Android (test app)
+
+A minimal app for trying Bluetooth meshing between real phones: start it on
+two Android phones near each other and they find each other, link up and
+sync posts, with no accounts, no internet and no setup.
+
+- `app/.../BleDriver.kt`: the Bluetooth driver. Radio work only (advertise,
+  scan, L2CAP channels); everything else is the Rust node.
+- `app/.../Native.kt`: the node (`apps/mesh-mobile`, built as
+  `libsocialmesh.so`).
+- `app/.../MainActivity.kt`: post, feed, and a log of what the radio does.
+
+Needs Android 10 (API 29) or newer: that's when Android got L2CAP
+connection-oriented channels.
+
+## Build
+
+1. Install [Android Studio](https://developer.android.com/studio). In its
+   SDK Manager, also install **NDK (Side by side)**.
+2. Rust targets and cargo-ndk:
+
+   ```sh
+   rustup target add aarch64-linux-android armv7-linux-androideabi x86_64-linux-android
+   cargo install cargo-ndk
+   ```
+
+3. Build the node library into the app (from the repository root; set
+   `ANDROID_NDK_HOME` if cargo-ndk can't find the NDK):
+
+   ```sh
+   cargo ndk -t arm64-v8a -t armeabi-v7a -t x86_64 -o android/app/src/main/jniLibs build --release -p mesh-mobile
+   ```
+
+4. Open the `android/` folder in Android Studio and run on a phone (twice:
+   two phones). Android Studio creates the Gradle wrapper on first sync.
+
+The emulator has no Bluetooth radio; use real phones.
+
+## What to expect
+
+- Grant the Bluetooth permissions when asked. Android 10/11 calls it
+  location permission; the app never reads your location.
+- Within a few seconds of both apps being open and in range, the log shows
+  `Found a node via bluetooth` and `Connected … over ble`.
+- Post on one phone; it appears on the other.
+- Phones on the same Wi-Fi also link over the LAN; the log names each
+  medium.
+
+## Known limits
+
+- The node runs only while the app is on screen (no background service yet).
+- Android rotates the Bluetooth address itself, on its own schedule (about
+  every 15 minutes). The app restarts advertising when the link key
+  rotates, but can't force a new address at that moment.
+- Android-to-Android only for now: Windows peers need the GATT pipe, which
+  this driver doesn't have yet. iOS needs its own driver.

@@ -84,7 +84,8 @@ mesh audio receive recording.wav        # any recording, any sample rate; every 
 Bluetooth LE: phones in range find each other and link up by themselves, with no identity in the
 advert and the radio address changing whenever the link key does. The protocol side is done and tested
 on a simulated radio (`mesh-transport-ble`); each platform needs a small driver for its Bluetooth API
-(Android, iOS, Windows, Linux), which is next. See [docs/TRANSPORTS.md](docs/TRANSPORTS.md).
+(Android, iOS, Windows, Linux). The Android driver and a test app are in [android/](android/README.md),
+not yet tried on real phones. See [docs/TRANSPORTS.md](docs/TRANSPORTS.md).
 
 Use `--home <dir>` (or `MESH_HOME`) to run several nodes on one machine. `mesh run --no-beacon` listens for nearby nodes without announcing yourself.
 

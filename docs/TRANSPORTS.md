@@ -22,7 +22,7 @@ So a new medium adds **reach** without adding **trust**.
 | LAN / Wi-Fi (same network) | UDP broadcast beacon | TCP | high | all | **done** |
 | Offline file (USB, SD, email) | — | bundle import/export | any | all | **done** |
 | Wi-Fi without a router | Wi-Fi Aware / Direct | TCP over P2P link | high | Android (Aware/Direct), Windows (Direct) | planned |
-| Bluetooth LE | BLE advertisement w/ service UUID | L2CAP CoC stream / GATT pipe | ~10–100 KB/s | Android, iOS, desktop | **core done** (simulated radio); platform drivers next |
+| Bluetooth LE | BLE advertisement w/ service UUID | L2CAP CoC stream / GATT pipe | ~10–100 KB/s | Android, iOS, desktop | **core done**; Android driver written, awaiting phone testing; iOS / Windows next |
 | NFC | NDEF tag/tap carrying `mesh1:` | — (hands off to BLE/Wi-Fi) | tiny | Android, iOS (read) | planned |
 | QR code | camera scan of `mesh1:` | — | tiny | all with camera | planned |
 | Audio (speaker → mic, calls, radio) | — | 16-FSK modem + fountain-coded datagrams, one way | 25–50 bytes/s | all with speaker+mic | **WAV files done**; live speaker/mic next |
@@ -114,6 +114,17 @@ implement; the rest lives in `mesh-transport-ble`. A simulated driver
 tests: discovery, three-hop relaying between phones out of range of each
 other, walking out of range and back, listen-only phones, address rotation,
 and a 150 KB file over 64-byte packets.
+
+**Android** (`android/`, `apps/mesh-mobile`): the driver is
+`BleDriver.kt`, about 300 lines of radio work, using insecure L2CAP channels
+(no pairing; the node's encryption covers the link). The node runs in Rust
+as `libsocialmesh.so`; driver and node exchange commands and events in a
+small byte encoding (`mesh_transport_ble::codec`), with fixed test vectors
+on both sides. A test drives two phone nodes through exactly that encoding
+into the simulated air. Not yet tried on real phones. Android picks its own
+Bluetooth address and rotates it about every 15 minutes; the app can only
+restart advertising when the link key rotates. Build steps:
+[android/README.md](../android/README.md).
 
 Fine for text posts and small images; large media wants Wi-Fi.
 
