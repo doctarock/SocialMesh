@@ -116,8 +116,11 @@ other, walking out of range and back, listen-only phones, address rotation,
 and a 150 KB file over 64-byte packets.
 
 **Android** (`android/`, `apps/mesh-mobile`): the driver is
-`BleDriver.kt`, about 300 lines of radio work, using insecure L2CAP channels
-(no pairing; the node's encryption covers the link). The node runs in Rust
+`BleDriver.kt` with `Link.kt` and `GattPipe.kt`, radio work only. It accepts
+links on an insecure L2CAP channel and on the GATT pipe (for Windows and
+iOS peers), and connects with whichever the peer advertises; no pairing,
+since the node's encryption covers the link. A foreground service keeps
+the node running with the app closed. The node runs in Rust
 as `libsocialmesh.so`; driver and node exchange commands and events in a
 small byte encoding (`mesh_transport_ble::codec`), with fixed test vectors
 on both sides. A test drives two phone nodes through exactly that encoding

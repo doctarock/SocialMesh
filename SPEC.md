@@ -480,6 +480,8 @@ version u8 = 1 | flags u8 = 0 | psm u16 | token [6]
 - A platform that can't put service data in an advert (iOS) advertises the
   UUID alone and serves the same 10 bytes in the readable characteristic
   `191e3b39-5476-45bf-82eb-a2c4070948e7`.
+- Nodes SHOULD also put the bare service UUID in the scan response, so
+  platforms that filter scans by UUID list find them.
 - A listen-only node (`beacon` off) never advertises; it scans and connects.
 
 ### 9.2 Links
@@ -490,8 +492,16 @@ Otherwise, the **GATT pipe** inside the SocialMesh service:
 - `191e3b37-…948e7` (RX): the central writes without response;
 - `191e3b38-…948e7` (TX): the peripheral notifies.
 
-Both carry the stream as consecutive byte chunks of at most ATT_MTU − 3
-bytes, in order. There is no framing; a disconnect ends the stream.
+The central opens a pipe by enabling notifications on TX, and MUST NOT
+write to RX before that; writes from a central without a pipe are dropped.
+Both directions carry the stream as consecutive byte chunks of at most
+ATT_MTU − 3 bytes, in order. There is no framing; a disconnect, or the
+central turning notifications off, ends the stream. Centrals SHOULD ask
+for the largest ATT MTU.
+
+A node that accepts links MUST offer the GATT pipe, even when it also
+advertises a `psm`: some platforms (Windows) can't open L2CAP channels and
+use the pipe whatever the advert says. Links on either are equal.
 
 ### 9.3 Who connects
 

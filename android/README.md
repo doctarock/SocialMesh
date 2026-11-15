@@ -4,10 +4,13 @@ A minimal app for trying Bluetooth meshing between real phones: start it on
 two Android phones near each other and they find each other, link up and
 sync posts, with no accounts, no internet and no setup.
 
-- `app/.../BleDriver.kt`: the Bluetooth driver. Radio work only (advertise,
-  scan, L2CAP channels); everything else is the Rust node.
+- `app/.../BleDriver.kt`, `Link.kt`, `GattPipe.kt`: the Bluetooth driver.
+  Radio work only (advertise, scan, L2CAP channels and the GATT pipe);
+  everything else is the Rust node.
 - `app/.../Native.kt`: the node (`apps/mesh-mobile`, built as
-  `libsocialmesh.so`).
+  `libsocialmesh.so`); `Mesh.kt` owns the one running node.
+- `app/.../MeshService.kt`: keeps the node running in the background, with
+  a notification showing the number of links and a Stop button.
 - `app/.../MainActivity.kt`: post, feed, and a log of what the radio does.
 
 Needs Android 10 (API 29) or newer: that's when Android got L2CAP
@@ -48,9 +51,14 @@ The emulator has no Bluetooth radio; use real phones.
 
 ## Known limits
 
-- The node runs only while the app is on screen (no background service yet).
 - Android rotates the Bluetooth address itself, on its own schedule (about
   every 15 minutes). The app restarts advertising when the link key
   rotates, but can't force a new address at that moment.
-- Android-to-Android only for now: Windows peers need the GATT pipe, which
-  this driver doesn't have yet. iOS needs its own driver.
+- The node keeps running with the screen off, but Android may still pause
+  its timers in deep sleep (Doze), slowing syncs; Bluetooth adverts and
+  incoming data wake it.
+- Turning Bluetooth off and on while the node runs stops it accepting
+  links until the node is restarted.
+- The GATT pipe (for Windows and iOS peers) is written but has only been
+  checked against the Android API, not run; Android-to-Android uses L2CAP.
+  iOS needs its own driver.

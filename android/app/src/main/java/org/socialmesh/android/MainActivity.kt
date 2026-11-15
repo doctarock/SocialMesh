@@ -17,7 +17,6 @@ import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
 import org.json.JSONArray
-import java.io.File
 import java.text.DateFormat
 import java.util.Date
 
@@ -26,23 +25,23 @@ import java.util.Date
  * is doing. Two phones running it in range should find each other and sync
  * with no setup.
  *
- * The node only runs while this screen is open; background running (a
- * foreground service) comes later.
+ * The node runs in [MeshService], so it keeps going with the screen off or
+ * the app closed, until stopped here or from the notification.
  */
 class MainActivity : Activity() {
-    private var handle = 0L
-    private var driver: BleDriver? = null
-    @Volatile private var watching = false
-
     private lateinit var status: TextView
+    private lateinit var toggle: Button
     private lateinit var input: EditText
     private lateinit var feed: TextView
     private lateinit var log: TextView
 
+    private val listener = Mesh.Listener { line -> runOnUiThread { onLine(line) } }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         val pad = (16 * resources.displayMetrics.density).toInt()
-        status = TextView(this).apply { text = "Starting…" }
+        status = TextView(this)
+        toggle = Button(this).apply { setOnClickListener { toggleNode() } }
         input = EditText(this).apply { hint = "Write a post" }
         val post = Button(this).apply {
             text = "Post"
@@ -57,35 +56,60 @@ class MainActivity : Activity() {
             orientation = LinearLayout.VERTICAL
             setPadding(pad, pad, pad, pad)
             addView(status)
+            addView(toggle)
             addView(input, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
             addView(post)
             addView(feed)
             addView(log)
         }
         setContentView(ScrollView(this).apply { addView(column) })
-        requestPermissionsThenStart()
+        if (!Mesh.running) requestPermissionsThenStart()
     }
 
-    private fun neededPermissions(): Array<String> =
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            arrayOf(
-                Manifest.permission.BLUETOOTH_SCAN,
-                Manifest.permission.BLUETOOTH_ADVERTISE,
-                Manifest.permission.BLUETOOTH_CONNECT,
-            )
+    override fun onStart() {
+        super.onStart()
+        Mesh.addListener(listener)
+        log.text = Mesh.recentLines().asReversed().joinToString("\n")
+        showState()
+    }
+
+    override fun onStop() {
+        Mesh.removeListener(listener)
+        super.onStop()
+    }
+
+    private fun toggleNode() {
+        if (Mesh.running) {
+            startService(MeshService.stopIntent(this))
         } else {
-            arrayOf(Manifest.permission.ACCESS_FINE_LOCATION)
+            requestPermissionsThenStart()
         }
+    }
+
+    private fun neededPermissions(): List<String> {
+        val p = mutableListOf<String>()
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            p += Manifest.permission.BLUETOOTH_SCAN
+            p += Manifest.permission.BLUETOOTH_ADVERTISE
+            p += Manifest.permission.BLUETOOTH_CONNECT
+        } else {
+            p += Manifest.permission.ACCESS_FINE_LOCATION
+        }
+        return p
+    }
 
     private fun requestPermissionsThenStart() {
-        val missing = neededPermissions().filter { checkSelfPermission(it) != PackageManager.PERMISSION_GRANTED }
+        val wanted = neededPermissions().toMutableList()
+        // Optional: without it the node still runs, but its notification is hidden.
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) wanted += Manifest.permission.POST_NOTIFICATIONS
+        val missing = wanted.filter { checkSelfPermission(it) != PackageManager.PERMISSION_GRANTED }
         if (missing.isEmpty()) ensureBluetoothOn() else requestPermissions(missing.toTypedArray(), REQ_PERMISSIONS)
     }
 
     override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, results: IntArray) {
         super.onRequestPermissionsResult(requestCode, permissions, results)
         if (requestCode != REQ_PERMISSIONS) return
-        if (results.isNotEmpty() && results.all { it == PackageManager.PERMISSION_GRANTED }) {
+        if (neededPermissions().all { checkSelfPermission(it) == PackageManager.PERMISSION_GRANTED }) {
             ensureBluetoothOn()
         } else {
             status.text = "Bluetooth permission is needed to find people nearby."
@@ -115,45 +139,39 @@ class MainActivity : Activity() {
     }
 
     private fun startNode() {
-        if (handle != 0L) return
-        val home = File(filesDir, "mesh").absolutePath
-        Thread {
-            val h = try {
-                Native.start(home, true, true)
-            } catch (e: RuntimeException) {
-                runOnUiThread { status.text = "Could not start: ${e.message}" }
-                return@Thread
-            }
-            runOnUiThread {
-                handle = h
-                driver = BleDriver(this, h).also { it.start() }
-                val ids = Native.ids(h)?.split(" ")
-                status.text = "You are ${ids?.getOrNull(0)} · link key ${ids?.getOrNull(1)} (changes every run)"
-                refreshFeed()
-                watchEvents()
-            }
-        }.start()
+        status.text = "Starting…"
+        startForegroundService(MeshService.startIntent(this))
     }
 
-    private fun watchEvents() {
-        watching = true
-        val h = handle
-        Thread({
-            while (watching) {
-                val line = Native.nextEvent(h, 500) ?: continue
-                runOnUiThread {
-                    log.text = (line + "\n" + log.text).take(4000)
-                    if (line.startsWith("New post")) refreshFeed()
-                }
-            }
-        }, "mesh-events").start()
+    private fun onLine(line: String) {
+        log.text = (line + "\n" + log.text).take(4000)
+        when {
+            line == "Started" || line == "Stopped" || line.startsWith("Could not start") -> showState()
+            line.startsWith("New post") -> refreshFeed()
+            line.startsWith("New link key") -> showState()
+        }
+    }
+
+    private fun showState() {
+        if (Mesh.running) {
+            val ids = Mesh.ids()?.split(" ")
+            status.text = "You are ${ids?.getOrNull(0)} · link key ${ids?.getOrNull(1)} (changes every run and daily)"
+            toggle.text = "Stop"
+        } else {
+            status.text = "Off. Nothing is sent or received."
+            toggle.text = "Start"
+        }
+        refreshFeed()
     }
 
     private fun publish() {
         val text = input.text.toString().trim()
-        if (text.isEmpty() || handle == 0L) return
+        if (text.isEmpty()) return
         try {
-            Native.publish(handle, text)
+            if (Mesh.publish(text) == null) {
+                log.text = "Start SocialMesh to post.\n" + log.text
+                return
+            }
             input.setText("")
             refreshFeed()
         } catch (e: RuntimeException) {
@@ -162,7 +180,11 @@ class MainActivity : Activity() {
     }
 
     private fun refreshFeed() {
-        val json = Native.feedJson(handle, 50) ?: return
+        val json = Mesh.feedJson(50)
+        if (json == null) {
+            feed.text = ""
+            return
+        }
         val posts = JSONArray(json)
         val time = DateFormat.getDateTimeInstance(DateFormat.SHORT, DateFormat.SHORT)
         val sb = StringBuilder()
@@ -177,24 +199,6 @@ class MainActivity : Activity() {
             sb.append(p.getString("body")).append("\n\n")
         }
         feed.text = if (sb.isEmpty()) "No posts yet. Bring another phone running SocialMesh close by." else sb
-    }
-
-    override fun onDestroy() {
-        watching = false
-        val h = handle
-        handle = 0
-        val d = driver
-        driver = null
-        if (h != 0L) {
-            // Off the UI thread: stopping waits for links and threads to wind down.
-            Thread {
-                d?.stop()
-                Native.stop(h)
-                Thread.sleep(600) // let the event watcher's last poll return
-                Native.free(h)
-            }.start()
-        }
-        super.onDestroy()
     }
 
     companion object {

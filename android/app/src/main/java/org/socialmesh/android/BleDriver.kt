@@ -5,7 +5,6 @@ import android.bluetooth.BluetoothAdapter
 import android.bluetooth.BluetoothDevice
 import android.bluetooth.BluetoothManager
 import android.bluetooth.BluetoothServerSocket
-import android.bluetooth.BluetoothSocket
 import android.bluetooth.le.AdvertiseCallback
 import android.bluetooth.le.AdvertiseData
 import android.bluetooth.le.AdvertiseSettings
@@ -17,9 +16,9 @@ import android.content.Context
 import android.os.ParcelUuid
 import android.util.Log
 import java.io.IOException
-import java.util.concurrent.ArrayBlockingQueue
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Executors
+import java.util.concurrent.RejectedExecutionException
 import java.util.concurrent.atomic.AtomicLong
 
 /**
@@ -29,18 +28,28 @@ import java.util.concurrent.atomic.AtomicLong
  * scan, listen, connect, send, close) and reports what happens. Adverts,
  * when to connect, encryption and address rotation are decided in Rust.
  *
- * Links are insecure L2CAP connection-oriented channels: no pairing, because
- * the node's own encrypted channel runs over every link. The GATT pipe
- * (for Windows peers) is not implemented on Android yet; adverts with
- * PSM 0 can't be connected to from here.
+ * Links are insecure L2CAP connection-oriented channels when the peer
+ * advertises a PSM, and the GATT pipe ([GattPipeServer], [GattClientLink])
+ * when it doesn't. There is no pairing, because the node's own encrypted
+ * channel runs over every link. Accepting offers both.
  *
  * Needs BLUETOOTH_SCAN, BLUETOOTH_ADVERTISE and BLUETOOTH_CONNECT (Android 12+)
  * or location permission (Android 10-11), granted before [start].
  */
 @SuppressLint("MissingPermission")
-class BleDriver(context: Context, private val handle: Long) {
-    private val adapter: BluetoothAdapter =
-        context.getSystemService(BluetoothManager::class.java).adapter
+class BleDriver(context: Context, private val node: Node) {
+    /** The node end of the driver ([Mesh] in the app). */
+    interface Node {
+        /** Next encoded command, or null after [timeoutMs]. */
+        fun nextRadioCommand(timeoutMs: Int): ByteArray?
+
+        /** Hand over an encoded event; blocks while the node catches up. */
+        fun radioEvent(event: ByteArray): Boolean
+    }
+
+    private val context: Context = context.applicationContext
+    private val manager: BluetoothManager = this.context.getSystemService(BluetoothManager::class.java)
+    private val adapter: BluetoothAdapter = manager.adapter
     private val serviceUuid = ParcelUuid(BleCodec.SERVICE_UUID)
 
     private val links = ConcurrentHashMap<Long, Link>()
@@ -49,11 +58,16 @@ class BleDriver(context: Context, private val handle: Long) {
     private val seen = ConcurrentHashMap<String, BluetoothDevice>()
     /** Scan callbacks arrive on the main thread; reporting can block, so it happens here. */
     private val reporter = Executors.newSingleThreadExecutor()
+    /** GATT callbacks arrive on binder threads that mustn't block: their events queue here, in order. */
+    private val gattEvents = Executors.newSingleThreadExecutor()
 
     @Volatile private var running = false
-    @Volatile private var server: BluetoothServerSocket? = null
+    @Volatile private var l2capServer: BluetoothServerSocket? = null
+    @Volatile private var gattServer: GattPipeServer? = null
+    private var listening = false
     private var advertising: AdvertiseCallback? = null
-    private var advertData: ByteArray? = null
+    /** The current advert's service data; the pipe also serves it for reading. */
+    @Volatile internal var advertData: ByteArray? = null
     private var scanning: ScanCallback? = null
     private var commandThread: Thread? = null
 
@@ -62,27 +76,53 @@ class BleDriver(context: Context, private val handle: Long) {
         commandThread = Thread(::commandLoop, "mesh-ble-commands").also { it.start() }
     }
 
-    /** Stop everything. Call before [Native.stop]. */
+    /** Stop everything. Call before stopping the node. */
     fun stop() {
         running = false
         commandThread?.join(2000)
         stopAdvertising()
         stopScan()
         try {
-            server?.close()
+            l2capServer?.close()
         } catch (e: IOException) {
         }
-        for (l in links.values) l.close()
+        gattServer?.close()
+        for (l in links.values) l.close("stopped")
         reporter.shutdownNow()
+        gattEvents.shutdownNow()
     }
 
-    private fun event(bytes: ByteArray) {
-        if (running && !Native.radioEvent(handle, bytes)) Log.w(TAG, "node refused an event")
+    // --- used by links ---
+
+    /** Hand an event to the node now (blocking). */
+    internal fun event(bytes: ByteArray) {
+        if (running && !node.radioEvent(bytes)) Log.w(TAG, "node refused an event")
     }
+
+    /** Hand an event to the node from a thread that mustn't block, keeping order. */
+    internal fun post(bytes: ByteArray) {
+        try {
+            gattEvents.execute { event(bytes) }
+        } catch (e: RejectedExecutionException) {
+            // stopping
+        }
+    }
+
+    internal fun newHostLink(): Long = BleCodec.HOST_LINK or nextHostLink.getAndIncrement()
+
+    internal fun adopt(link: Link) {
+        links[link.id] = link
+    }
+
+    internal fun forget(link: Link) {
+        links.remove(link.id, link)
+    }
+
+    // --- commands ---
 
     private fun commandLoop() {
         while (running) {
-            val bytes = Native.nextRadioCommand(handle, 250) ?: continue
+            val bytes = node.nextRadioCommand(250) ?: continue
             val cmd = BleCodec.decodeCommand(bytes) ?: continue
             try {
                 execute(cmd)
@@ -110,7 +150,7 @@ class BleDriver(context: Context, private val handle: Long) {
             is BleCodec.Command.Connect -> connect(cmd)
             // Blocks only if this link's queue is full: flow control.
             is BleCodec.Command.Send -> links[cmd.link]?.queue?.put(cmd.data)
-            is BleCodec.Command.Close -> links[cmd.link]?.close()
+            is BleCodec.Command.Close -> links[cmd.link]?.close("closed by node")
             is BleCodec.Command.RotateAddress -> {
                 // Android picks the advertising address itself (a resolvable
                 // private address that it rotates on its own timer). Starting a
@@ -121,11 +161,35 @@ class BleDriver(context: Context, private val handle: Long) {
         }
     }
 
+    /** Accept links on both an L2CAP channel and the GATT pipe, so every kind of peer can reach us. */
     private fun listen() {
-        if (server != null) return
-        val s = adapter.listenUsingInsecureL2capChannel()
-        server = s
-        event(BleCodec.listening(s.psm))
+        if (listening) return
+        if (gattServer == null) {
+            gattServer = try {
+                GattPipeServer(this, context, manager)
+            } catch (e: Exception) {
+                Log.w(TAG, "GATT pipe unavailable", e)
+                null
+            }
+        }
+        val psm = try {
+            val s = adapter.listenUsingInsecureL2capChannel()
+            l2capServer = s
+            acceptLoop(s)
+            s.psm
+        } catch (e: IOException) {
+            Log.w(TAG, "L2CAP channel unavailable", e)
+            0
+        }
+        if (psm == 0 && gattServer == null) {
+            Log.e(TAG, "can't accept links on Bluetooth")
+            return
+        }
+        listening = true
+        event(BleCodec.listening(psm))
+    }
+
+    private fun acceptLoop(s: BluetoothServerSocket) {
         Thread({
             while (running) {
                 val socket = try {
@@ -133,32 +197,49 @@ class BleDriver(context: Context, private val handle: Long) {
                 } catch (e: IOException) {
                     break // server closed
                 }
-                val id = BleCodec.HOST_LINK or nextHostLink.getAndIncrement()
-                val link = Link(id, socket)
-                links[id] = link
-                event(BleCodec.incoming(id, socket.maxTransmitPacketSize, socket.remoteDevice.address))
-                link.start()
+                val link = L2capLink(this, newHostLink(), socket)
+                adopt(link)
+                link.open = true
+                link.tell(BleCodec.incoming(link.id, link.mtu, socket.remoteDevice.address))
+                link.startWriter()
+                link.startReader()
             }
         }, "mesh-ble-accept").start()
     }
 
     private fun connect(cmd: BleCodec.Command.Connect) {
-        if (cmd.psm == 0) {
-            event(BleCodec.connectFailed(cmd.link, "GATT pipe not supported on Android yet"))
+        val device = seen[cmd.device] ?: try {
+            adapter.getRemoteDevice(cmd.device)
+        } catch (e: IllegalArgumentException) {
+            event(BleCodec.connectFailed(cmd.link, "bad device address"))
             return
         }
-        val device = seen[cmd.device] ?: adapter.getRemoteDevice(cmd.device)
+        if (cmd.psm == 0) {
+            // Until connected, a Close from the node (it gave up) cancels the attempt.
+            val link = GattClientLink(this, cmd.link, device)
+            adopt(link)
+            link.connect(context)
+            return
+        }
+        val link = try {
+            L2capLink(this, cmd.link, device.createInsecureL2capChannel(cmd.psm))
+        } catch (e: IOException) {
+            event(BleCodec.connectFailed(cmd.link, e.message ?: "connect failed"))
+            return
+        }
+        adopt(link)
         Thread({
             try {
-                val socket = device.createInsecureL2capChannel(cmd.psm)
-                socket.connect()
-                val link = Link(cmd.link, socket)
-                links[cmd.link] = link
-                event(BleCodec.connected(cmd.link, socket.maxTransmitPacketSize))
-                link.start()
+                link.connect()
             } catch (e: IOException) {
-                event(BleCodec.connectFailed(cmd.link, e.message ?: "connect failed"))
+                link.close(e.message ?: "connect failed")
+                return@Thread
             }
+            if (link.isClosed) return@Thread
+            link.open = true
+            link.tell(BleCodec.connected(link.id, link.mtu))
+            link.startWriter()
+            link.startReader()
         }, "mesh-ble-connect").start()
     }
 
@@ -177,13 +258,19 @@ class BleDriver(context: Context, private val handle: Long) {
             .setIncludeTxPowerLevel(false)
             .addServiceData(serviceUuid, serviceData)
             .build()
+        // The bare service UUID, for platforms that filter scans by UUID list (iOS, Windows).
+        val scanResponse = AdvertiseData.Builder()
+            .setIncludeDeviceName(false)
+            .setIncludeTxPowerLevel(false)
+            .addServiceUuid(serviceUuid)
+            .build()
         val cb = object : AdvertiseCallback() {
             override fun onStartFailure(errorCode: Int) {
                 Log.w(TAG, "advertising failed: $errorCode")
             }
         }
         advertising = cb
-        advertiser.startAdvertising(settings, data, cb)
+        advertiser.startAdvertising(settings, data, scanResponse, cb)
     }
 
     private fun stopAdvertising() {
@@ -199,10 +286,13 @@ class BleDriver(context: Context, private val handle: Long) {
     private fun startScan() {
         if (scanning != null) return
         val scanner = adapter.bluetoothLeScanner ?: return
-        // Matches any advert with SocialMesh service data (an empty pattern
-        // matches every value). A filter also keeps scanning alive with the
-        // screen off.
-        val filter = ScanFilter.Builder().setServiceData(serviceUuid, ByteArray(0)).build()
+        // Any advert with SocialMesh service data (an empty pattern matches
+        // every value), or with just the service UUID (iOS can't send service
+        // data). Filters also keep scanning alive with the screen off.
+        val filters = listOf(
+            ScanFilter.Builder().setServiceData(serviceUuid, ByteArray(0)).build(),
+            ScanFilter.Builder().setServiceUuid(serviceUuid).build(),
+        )
         val settings = ScanSettings.Builder().setScanMode(ScanSettings.SCAN_MODE_BALANCED).build()
         val cb = object : ScanCallback() {
             override fun onScanResult(callbackType: Int, result: ScanResult) = report(result)
@@ -212,17 +302,20 @@ class BleDriver(context: Context, private val handle: Long) {
             }
         }
         scanning = cb
-        scanner.startScan(listOf(filter), settings, cb)
+        scanner.startScan(filters, settings, cb)
     }
 
     private fun report(result: ScanResult) {
-        val data = result.scanRecord?.getServiceData(serviceUuid) ?: return
+        val record = result.scanRecord ?: return
+        // No service data: a peer heard without a token, reached over the GATT pipe (§9.3).
+        val data = record.getServiceData(serviceUuid)
+            ?: if (record.serviceUuids?.contains(serviceUuid) == true) ByteArray(0) else return
         val device = result.device
         if (seen.size > 1024) seen.clear()
         seen[device.address] = device
         try {
             reporter.execute { event(BleCodec.advert(device.address, data, result.rssi)) }
-        } catch (e: java.util.concurrent.RejectedExecutionException) {
+        } catch (e: RejectedExecutionException) {
             // stopping
         }
     }
@@ -237,55 +330,7 @@ class BleDriver(context: Context, private val handle: Long) {
         }
     }
 
-    /** One L2CAP channel: a writer thread fed by a bounded queue, and a reader thread. */
-    private inner class Link(val id: Long, private val socket: BluetoothSocket) {
-        val queue = ArrayBlockingQueue<ByteArray>(64)
-
-        fun start() {
-            Thread({
-                try {
-                    val out = socket.outputStream
-                    while (true) {
-                        val b = queue.take()
-                        if (b === EOF) break
-                        out.write(b)
-                        out.flush()
-                    }
-                } catch (e: IOException) {
-                } catch (e: InterruptedException) {
-                }
-                close()
-            }, "mesh-ble-write").start()
-            Thread({
-                val buf = ByteArray(maxOf(socket.maxReceivePacketSize, 512))
-                try {
-                    val input = socket.inputStream
-                    while (true) {
-                        val n = input.read(buf)
-                        if (n < 0) break
-                        if (n > 0) event(BleCodec.data(id, buf, n))
-                    }
-                } catch (e: IOException) {
-                }
-                close()
-            }, "mesh-ble-read").start()
-        }
-
-        /** Idempotent; tells the node once. */
-        fun close() {
-            if (links.remove(id) == null) return
-            try {
-                socket.close()
-            } catch (e: IOException) {
-            }
-            queue.clear()
-            queue.offer(EOF)
-            event(BleCodec.closed(id))
-        }
-    }
-
     companion object {
         private const val TAG = "SocialMeshBle"
-        private val EOF = ByteArray(0)
     }
 }
