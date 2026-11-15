@@ -34,8 +34,20 @@ connection-oriented channels.
    cargo ndk -t arm64-v8a -t armeabi-v7a -t x86_64 -o android/app/src/main/jniLibs build --release -p mesh-mobile
    ```
 
+   Without cargo-ndk, point cargo at the NDK's clang directly (Windows
+   shown; `.cmd` drops on other hosts):
+
+   ```sh
+   TC=$ANDROID_HOME/ndk/<version>/toolchains/llvm/prebuilt/windows-x86_64/bin
+   CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER=$TC/aarch64-linux-android29-clang.cmd    CC_aarch64_linux_android=$TC/aarch64-linux-android29-clang.cmd AR_aarch64_linux_android=$TC/llvm-ar.exe      cargo build --release -p mesh-mobile --target aarch64-linux-android
+   cp target/aarch64-linux-android/release/libsocialmesh.so android/app/src/main/jniLibs/arm64-v8a/
+   ```
+
 4. Open the `android/` folder in Android Studio and run on a phone (twice:
    two phones). Android Studio creates the Gradle wrapper on first sync.
+   Or from the command line, with Gradle 8.7+ and JDK 17:
+   `gradle assembleDebug testDebugUnitTest`, then
+   `adb install -r app/build/outputs/apk/debug/app-debug.apk`.
 
 The emulator has no Bluetooth radio; use real phones.
 

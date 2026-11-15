@@ -124,7 +124,9 @@ the node running with the app closed. The node runs in Rust
 as `libsocialmesh.so`; driver and node exchange commands and events in a
 small byte encoding (`mesh_transport_ble::codec`), with fixed test vectors
 on both sides. A test drives two phone nodes through exactly that encoding
-into the simulated air. Not yet tried on real phones. Android picks its own
+into the simulated air. On a real phone (Android 15) the app starts, advertises
+exactly the 10-byte service data, scans, and serves the GATT pipe; linking
+two real phones is not yet tested. Android picks its own
 Bluetooth address and rotates it about every 15 minutes; the app can only
 restart advertising when the link key rotates. Build steps:
 [android/README.md](../android/README.md).

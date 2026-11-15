@@ -85,7 +85,7 @@ Bluetooth LE: phones in range find each other and link up by themselves, with no
 advert and the radio address changing whenever the link key does. The protocol side is done and tested
 on a simulated radio (`mesh-transport-ble`); each platform needs a small driver for its Bluetooth API
 (Android, iOS, Windows, Linux). The Android driver and a test app are in [android/](android/README.md),
-not yet tried on real phones. See [docs/TRANSPORTS.md](docs/TRANSPORTS.md).
+running on a real phone; linking two real phones is not yet tested. See [docs/TRANSPORTS.md](docs/TRANSPORTS.md).
 
 Use `--home <dir>` (or `MESH_HOME`) to run several nodes on one machine. `mesh run --no-beacon` listens for nearby nodes without announcing yourself.
 
