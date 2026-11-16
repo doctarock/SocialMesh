@@ -73,25 +73,51 @@ class PublishSiteActivity : Activity() {
             isEnabled = false
             setOnClickListener { doPublish(false) }
         }
-        val column = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(pad, pad, pad, pad)
+        actionBar?.setDisplayHomeAsUpEnabled(true)
+        val crumbs = Crumbs.view(this)
+        Crumbs.set(
+            crumbs,
+            listOf(
+                Crumbs.Crumb("SocialMesh", Crumbs.home(this)),
+                Crumbs.Crumb("Sites", Crumbs.sites(this)),
+                Crumbs.Crumb("Publish", null),
+            ),
+        )
+        val column = Ui.column(this).apply {
             addView(
-                TextView(this@PublishSiteActivity).apply {
-                    text = "A site is a set of web pages that travels like a post, with no server. " +
-                        "Only you can publish new versions of your site. Scripts never run."
-                },
+                Ui.note(
+                    this@PublishSiteActivity,
+                    "A site is a set of web pages that travels like a post, with no server. Only you can " +
+                        "publish new versions of your site. Scripts never run; photos lose their hidden location.",
+                ),
             )
+            addView(Ui.heading(this@PublishSiteActivity, "Which site"))
             addView(target)
+            addView(Ui.heading(this@PublishSiteActivity, "Details"))
             addView(titleInput, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
+            addView(Ui.note(this@PublishSiteActivity, "First page"))
             addView(indexInput, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
-            addView(folder, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
-            addView(zip, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
-            addView(picked)
+            addView(Ui.heading(this@PublishSiteActivity, "Files"))
+            addView(Ui.row(this@PublishSiteActivity, folder, zip))
+            addView(Ui.card(this@PublishSiteActivity).apply { addView(picked) })
             addView(publish, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
         }
-        setContentView(ScrollView(this).apply { addView(column) })
+        setContentView(
+            LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                addView(crumbs, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
+                addView(ScrollView(this@PublishSiteActivity).apply { addView(column) }, LinearLayout.LayoutParams(MATCH_PARENT, 0, 1f))
+            },
+        )
         fillTargets()
+    }
+
+    override fun onOptionsItemSelected(item: android.view.MenuItem): Boolean {
+        if (item.itemId == android.R.id.home) {
+            finish()
+            return true
+        }
+        return super.onOptionsItemSelected(item)
     }
 
     private fun fillTargets() {
@@ -158,7 +184,9 @@ class PublishSiteActivity : Activity() {
         val size = files.sumOf { it.second.size.toLong() }
         val index = indexInput.text.toString()
         val note = if (index in paths) "First page: $index" else "No $index among them: set the first page above."
-        picked.text = "${files.size} files, ${size / 1024} KB\n$note"
+        val shown = paths.sorted().take(8).joinToString("\n") { "  $it" }
+        val more = if (paths.size > 8) "\n  … and ${paths.size - 8} more" else ""
+        picked.text = "${files.size} files, ${Ui.size(size)}\n$shown$more\n\n$note"
         publish.isEnabled = files.isNotEmpty()
     }
 

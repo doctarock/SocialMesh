@@ -20,6 +20,13 @@
   lookups and WebView metrics off, and outside links opened only after a
   prompt. Tested on a phone: a site and its update arrived over Wi-Fi from a
   computer, and a tracking image was blocked before any request was made.
+- Android look and feel: breadcrumbs on every screen (`SocialMesh › Sites ›
+  site › page`, each a link back up) and a back arrow; cards and section
+  headings that follow light and dark mode; a status line saying who you're
+  linked with and how; posts with relative times; the activity log tucked
+  away; a confirmation before Stop. The site viewer gains Reload, About this
+  site (version, files, who can publish) and Copy address; long-press a site
+  to copy its address; publishing previews the files.
 - Android: publish a folder or `.zip` as a site (new, update, or anonymous),
   with photo metadata stripped. Tested on a phone, including a version 2
   update with a real photo whose GPS data was removed.

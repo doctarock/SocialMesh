@@ -3,6 +3,7 @@ package org.socialmesh.android
 import android.app.Activity
 import android.content.Intent
 import android.os.Bundle
+import android.view.MenuItem
 import android.view.ViewGroup.LayoutParams.MATCH_PARENT
 import android.view.ViewGroup.LayoutParams.WRAP_CONTENT
 import android.widget.Button
@@ -10,34 +11,49 @@ import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
 import org.json.JSONArray
+import org.json.JSONObject
 
-/** The sites this phone holds, newest first. Tap one to open it. */
+/** The sites this phone holds: yours first, then everyone else's. Tap to open; long-press to copy the address. */
 class SitesActivity : Activity() {
+    private lateinit var crumbs: TextView
     private lateinit var list: LinearLayout
     private val listener = Mesh.Listener { line ->
-        if (line.startsWith("New site")) runOnUiThread { refresh() }
+        if (line.startsWith("New site") || line.startsWith("Published")) runOnUiThread { refresh() }
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         title = "Sites"
-        val pad = (16 * resources.displayMetrics.density).toInt()
-        list = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(pad, pad, pad, pad)
-        }
-        val publish = android.widget.Button(this).apply {
+        actionBar?.setDisplayHomeAsUpEnabled(true)
+        crumbs = Crumbs.view(this)
+        Crumbs.set(crumbs, listOf(Crumbs.Crumb("SocialMesh", Crumbs.home(this)), Crumbs.Crumb("Sites", null)))
+        list = Ui.column(this)
+        val publish = Button(this).apply {
             text = "Publish a site"
             setOnClickListener { startActivity(Intent(this@SitesActivity, PublishSiteActivity::class.java)) }
         }
         setContentView(
             LinearLayout(this).apply {
                 orientation = LinearLayout.VERTICAL
-                setPadding(pad, pad / 2, pad, 0)
-                addView(publish, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
+                addView(crumbs, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
                 addView(ScrollView(this@SitesActivity).apply { addView(list) }, LinearLayout.LayoutParams(MATCH_PARENT, 0, 1f))
+                addView(
+                    LinearLayout(this@SitesActivity).apply {
+                        val p = Ui.dp(this@SitesActivity, 12)
+                        setPadding(p, 0, p, p)
+                        addView(publish, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
+                    },
+                )
             },
         )
+    }
+
+    override fun onOptionsItemSelected(item: MenuItem): Boolean {
+        if (item.itemId == android.R.id.home) {
+            finish()
+            return true
+        }
+        return super.onOptionsItemSelected(item)
     }
 
     override fun onStart() {
@@ -56,50 +72,71 @@ class SitesActivity : Activity() {
         val json = try {
             Mesh.sitesJson()
         } catch (e: RuntimeException) {
-            note("Couldn't list sites: ${e.message}")
+            list.addView(Ui.note(this, "Couldn't list sites: ${e.message}"))
             return
         }
         if (json == null) {
-            note("Start SocialMesh to see sites.")
+            list.addView(Ui.note(this, "Start SocialMesh to see sites."))
             return
         }
-        val sites = JSONArray(json)
-        if (sites.length() == 0) {
-            note(
-                "No sites yet. Sites are web pages passed around like posts: they arrive from " +
-                    "nearby phones and computers running SocialMesh.",
-            )
-            return
-        }
-        note("Sites run no scripts and load nothing from outside, so opening one tells no website you read it.")
-        for (i in 0 until sites.length()) {
-            val s = sites.getJSONObject(i)
-            val have = s.getInt("have")
-            val files = s.getInt("files")
-            val state = if (have < files) "$have of $files files here" else "$files files"
-            val who = if (s.getBoolean("ownerless")) " · anonymous" else ""
-            val b = Button(this).apply {
-                isAllCaps = false
-                text = "${s.getString("title")}\nversion ${s.getInt("version")} · $state · ${size(s.getLong("size"))} · ${s.getString("short")}$who"
-                setOnClickListener {
-                    startActivity(
-                        Intent(this@SitesActivity, SiteActivity::class.java)
-                            .putExtra(SiteActivity.EXTRA_ADDRESS, s.getString("address"))
-                            .putExtra(SiteActivity.EXTRA_TITLE, s.getString("title")),
-                    )
-                }
+        val mine = HashSet<String>()
+        try {
+            Mesh.mySitesJson()?.let { j ->
+                val a = JSONArray(j)
+                for (i in 0 until a.length()) mine += a.getJSONObject(i).getString("address")
             }
-            list.addView(b, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
+        } catch (e: RuntimeException) {
         }
+        val all = JSONArray(json)
+        val sites = (0 until all.length()).map { all.getJSONObject(it) }
+        val (yours, others) = sites.partition { it.getString("address") in mine }
+        list.addView(
+            Ui.note(
+                this,
+                "Sites are web pages passed around like posts, with no server. They run no scripts and " +
+                    "load nothing from outside, so opening one tells no website you read it.",
+            ),
+        )
+        if (yours.isNotEmpty()) {
+            list.addView(Ui.heading(this, "Yours"))
+            for (s in yours) list.addView(card(s, true))
+        }
+        list.addView(Ui.heading(this, if (yours.isEmpty()) "Sites" else "From others"))
+        if (others.isEmpty()) {
+            list.addView(Ui.note(this, "None yet. They arrive from nearby phones and computers running SocialMesh."))
+        }
+        for (s in others) list.addView(card(s, false))
     }
 
-    private fun note(text: String) {
-        list.addView(TextView(this).apply { this.text = text })
-    }
-
-    private fun size(n: Long): String = when {
-        n < 1024 -> "$n B"
-        n < 1024 * 1024 -> "${n / 1024} KB"
-        else -> String.format("%.1f MB", n / 1048576.0)
+    private fun card(s: JSONObject, yours: Boolean): LinearLayout {
+        val have = s.getInt("have")
+        val files = s.getInt("files")
+        val title = s.getString("title")
+        val address = s.getString("address")
+        val state = if (have < files) "$have of $files files here" else "$files files"
+        val kind = when {
+            s.getBoolean("ownerless") -> " · anonymous"
+            yours -> " · yours"
+            else -> ""
+        }
+        return Ui.card(
+            this,
+            onClick = {
+                startActivity(
+                    Intent(this, SiteActivity::class.java)
+                        .putExtra(SiteActivity.EXTRA_ADDRESS, address)
+                        .putExtra(SiteActivity.EXTRA_TITLE, title),
+                )
+            },
+            onLongClick = { Ui.copy(this, "Site address", address) },
+        ).apply {
+            addView(Ui.text(this@SitesActivity, title, 17f, bold = true))
+            addView(
+                Ui.note(
+                    this@SitesActivity,
+                    "Version ${s.getInt("version")} · $state · ${Ui.size(s.getLong("size"))} · ${s.getString("short")}$kind",
+                ),
+            )
+        }
     }
 }

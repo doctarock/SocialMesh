@@ -2,6 +2,7 @@ package org.socialmesh.android
 
 import android.Manifest
 import android.app.Activity
+import android.app.AlertDialog
 import android.bluetooth.BluetoothAdapter
 import android.bluetooth.BluetoothManager
 import android.content.Intent
@@ -10,6 +11,9 @@ import android.content.pm.PackageManager
 import android.graphics.Typeface
 import android.os.Build
 import android.os.Bundle
+import android.text.InputType
+import android.view.Gravity
+import android.view.View
 import android.view.ViewGroup.LayoutParams.MATCH_PARENT
 import android.view.ViewGroup.LayoutParams.WRAP_CONTENT
 import android.widget.Button
@@ -17,25 +21,25 @@ import android.widget.EditText
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
+import android.widget.Toast
 import org.json.JSONArray
 import java.io.File
-import java.text.DateFormat
-import java.util.Date
 
 /**
- * A minimal test app: start the node, post, see the feed and what the radio
- * is doing. Two phones running it in range should find each other and sync
- * with no setup.
- *
- * The node runs in [MeshService], so it keeps going with the screen off or
- * the app closed, until stopped here or from the notification.
+ * The main screen: who you are and who you're linked with, writing a post,
+ * sharing (sites, sound), and the feed. The node itself runs in
+ * [MeshService], so it keeps going with the screen off or the app closed,
+ * until stopped here or from the notification.
  */
 class MainActivity : Activity() {
-    private lateinit var status: TextView
+    private lateinit var who: TextView
+    private lateinit var linked: TextView
     private lateinit var toggle: Button
     private lateinit var input: EditText
-    private lateinit var feed: TextView
+    private lateinit var post: Button
+    private lateinit var feed: LinearLayout
     private lateinit var log: TextView
+    private lateinit var logToggle: TextView
     private lateinit var play: Button
     private lateinit var listen: Button
 
@@ -50,13 +54,61 @@ class MainActivity : Activity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        val pad = (16 * resources.displayMetrics.density).toInt()
-        status = TextView(this)
+        val column = Ui.column(this)
+
+        // You, and who you're linked with.
+        who = Ui.text(this, "", 17f, bold = true)
+        linked = Ui.note(this, "")
         toggle = Button(this).apply { setOnClickListener { toggleNode() } }
-        input = EditText(this).apply { hint = "Write a post" }
-        val post = Button(this).apply {
+        val status = Ui.card(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            addView(
+                LinearLayout(this@MainActivity).apply {
+                    orientation = LinearLayout.VERTICAL
+                    addView(who)
+                    addView(linked)
+                },
+                LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f),
+            )
+            addView(toggle)
+        }
+        column.addView(status)
+
+        // Write.
+        input = EditText(this).apply {
+            hint = "Write a post"
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_MULTI_LINE or InputType.TYPE_TEXT_FLAG_CAP_SENTENCES
+            minLines = 2
+            maxLines = 8
+            gravity = Gravity.TOP or Gravity.START
+        }
+        post = Button(this).apply {
             text = "Post"
             setOnClickListener { publish() }
+        }
+        val compose = Ui.card(this).apply {
+            addView(input, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
+            addView(
+                LinearLayout(this@MainActivity).apply {
+                    orientation = LinearLayout.HORIZONTAL
+                    gravity = Gravity.CENTER_VERTICAL
+                    addView(
+                        Ui.note(this@MainActivity, "Signed by you. It reaches people as you meet them."),
+                        LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f),
+                    )
+                    addView(post)
+                },
+                LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT),
+            )
+        }
+        column.addView(compose)
+
+        // Share.
+        column.addView(Ui.heading(this, "Share"))
+        val sites = Button(this).apply {
+            text = "Sites"
+            setOnClickListener { startActivity(Intent(this@MainActivity, SitesActivity::class.java)) }
         }
         play = Button(this).apply {
             text = PLAY
@@ -66,32 +118,27 @@ class MainActivity : Activity() {
             text = LISTEN
             setOnClickListener { toggleListening() }
         }
-        val sites = Button(this).apply {
-            text = "Sites"
-            setOnClickListener { startActivity(Intent(this@MainActivity, SitesActivity::class.java)) }
+        column.addView(Ui.row(this, sites, play, listen))
+
+        // Posts.
+        column.addView(Ui.heading(this, "Posts"))
+        feed = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        column.addView(feed, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
+
+        // What the node is doing, for the curious.
+        logToggle = Ui.note(this, "").apply {
+            setPadding(Ui.dp(this@MainActivity, 4), Ui.dp(this@MainActivity, 16), 0, Ui.dp(this@MainActivity, 8))
+            setOnClickListener { setLogShown(log.visibility != View.VISIBLE) }
         }
-        val sound = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            addView(play, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
-            addView(listen, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
-        }
-        feed = TextView(this).apply { setPadding(0, pad, 0, pad) }
         log = TextView(this).apply {
             typeface = Typeface.MONOSPACE
             textSize = 11f
+            setTextColor(Ui.secondary(this@MainActivity))
         }
-        val column = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(pad, pad, pad, pad)
-            addView(status)
-            addView(toggle)
-            addView(input, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
-            addView(post)
-            addView(sound, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
-            addView(sites, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
-            addView(feed)
-            addView(log)
-        }
+        column.addView(logToggle)
+        column.addView(log)
+        setLogShown(false)
+
         setContentView(ScrollView(this).apply { addView(column) })
         if (!Mesh.running) requestPermissionsThenStart()
     }
@@ -109,20 +156,30 @@ class MainActivity : Activity() {
         super.onStop()
     }
 
+    private fun setLogShown(shown: Boolean) {
+        log.visibility = if (shown) View.VISIBLE else View.GONE
+        logToggle.text = if (shown) "Hide activity ▴" else "Show activity ▾"
+    }
+
+    private fun say(text: String) = Toast.makeText(this, text, Toast.LENGTH_LONG).show()
+
+    // ---- sound ----------------------------------------------------------------
+
     private fun playNewest() {
         if (Speaker.isPlaying) return
         val pcm = try {
             Mesh.soundOfNewest(false)
         } catch (e: RuntimeException) {
-            log.text = "Can't play: ${e.message}\n" + log.text
+            say("Can't play: ${e.message}")
             return
         }
         if (pcm == null) {
-            log.text = "Start SocialMesh to play posts.\n" + log.text
+            say("Start SocialMesh to play posts.")
             return
         }
         val seconds = pcm.size / 2 / 8000
         Mesh.report("Playing the newest post as sound (${seconds}s)")
+        say("Playing for about $seconds seconds. Turn the volume up and hold it near the other phone.")
         play.text = "Playing…"
         play.isEnabled = false
         Speaker.play(pcm) {
@@ -145,14 +202,15 @@ class MainActivity : Activity() {
 
     private fun startListening() {
         if (!Mesh.running) {
-            log.text = "Start SocialMesh to listen.\n" + log.text
+            say("Start SocialMesh to listen.")
             return
         }
         if (mic.start()) {
-            listen.text = "Stop listening"
+            listen.text = "Stop"
             Mesh.report("Listening for posts by sound")
+            say("Listening. Posts played nearby will appear in the feed.")
         } else {
-            log.text = "Couldn't open the microphone.\n" + log.text
+            say("Couldn't open the microphone.")
         }
     }
 
@@ -163,9 +221,16 @@ class MainActivity : Activity() {
         listen.text = LISTEN
     }
 
+    // ---- starting and stopping ---------------------------------------------------
+
     private fun toggleNode() {
         if (Mesh.running) {
-            startService(MeshService.stopIntent(this))
+            AlertDialog.Builder(this)
+                .setTitle("Stop SocialMesh?")
+                .setMessage("Nothing is sent or received until you start it again, and nearby people won't get your posts from this phone.")
+                .setPositiveButton("Stop") { _, _ -> startService(MeshService.stopIntent(this)) }
+                .setNegativeButton("Keep running", null)
+                .show()
         } else {
             requestPermissionsThenStart()
         }
@@ -197,7 +262,7 @@ class MainActivity : Activity() {
             if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
                 startListening()
             } else {
-                log.text = "Microphone permission is needed to hear posts.\n" + log.text
+                say("Microphone permission is needed to hear posts.")
             }
             return
         }
@@ -205,7 +270,7 @@ class MainActivity : Activity() {
         if (neededPermissions().all { checkSelfPermission(it) == PackageManager.PERMISSION_GRANTED }) {
             ensureBluetoothOn()
         } else {
-            status.text = "Bluetooth permission is needed to find people nearby."
+            linked.text = "Bluetooth permission is needed to find people nearby."
         }
     }
 
@@ -213,7 +278,7 @@ class MainActivity : Activity() {
     private fun ensureBluetoothOn() {
         val adapter = getSystemService(BluetoothManager::class.java).adapter
         if (adapter == null) {
-            status.text = "This device has no Bluetooth."
+            linked.text = "This device has no Bluetooth."
         } else if (!adapter.isEnabled) {
             @Suppress("DEPRECATION")
             startActivityForResult(Intent(BluetoothAdapter.ACTION_REQUEST_ENABLE), REQ_ENABLE)
@@ -227,14 +292,16 @@ class MainActivity : Activity() {
         @Suppress("DEPRECATION")
         super.onActivityResult(requestCode, resultCode, data)
         if (requestCode == REQ_ENABLE) {
-            if (resultCode == RESULT_OK) startNode() else status.text = "Bluetooth is off."
+            if (resultCode == RESULT_OK) startNode() else linked.text = "Bluetooth is off, so people nearby can't find you."
         }
     }
 
     private fun startNode() {
-        status.text = "Starting…"
+        linked.text = "Starting…"
         startForegroundService(MeshService.startIntent(this))
     }
+
+    // ---- state ------------------------------------------------------------------
 
     private fun onLine(line: String) {
         log.text = (line + "\n" + log.text).take(4000)
@@ -242,63 +309,90 @@ class MainActivity : Activity() {
             line == "Started" || line == "Stopped" || line.startsWith("Could not start") -> showState()
             line.startsWith("New post") -> refreshFeed()
             line.startsWith("New link key") -> showState()
+            line.startsWith("Connected") || line.startsWith("Disconnected") -> showLinks()
         }
+        if (line.startsWith("Could not start")) say(line)
     }
 
     private fun showState() {
         if (Mesh.running) {
             val ids = Mesh.ids()?.split(" ")
-            status.text = "You are ${ids?.getOrNull(0)} · link key ${ids?.getOrNull(1)} (changes every run and daily)"
+            who.text = "You are ${ids?.getOrNull(0) ?: "…"}"
             toggle.text = "Stop"
+            showLinks()
         } else {
-            status.text = "Off. Nothing is sent or received."
+            who.text = "SocialMesh is off"
+            linked.text = "Nothing is sent or received."
             toggle.text = "Start"
         }
         refreshFeed()
     }
 
+    /** "Linked with 2 nearby: Bluetooth, Wi-Fi" from the node's live links. */
+    private fun showLinks() {
+        if (!Mesh.running) return
+        val links = (Mesh.links() ?: "").lines().filter { it.isNotBlank() }.map { it.split(" ") }
+        val peers = links.map { it[0] }.toSet().size
+        val media = links.mapNotNull { it.getOrNull(1) }.toSet().map(Ui::medium).sorted()
+        linked.text = when (peers) {
+            0 -> "Looking for people nearby…"
+            1 -> "Linked with 1 nearby · ${media.joinToString(", ")}"
+            else -> "Linked with $peers nearby · ${media.joinToString(", ")}"
+        }
+    }
+
     private fun publish() {
         val text = input.text.toString().trim()
-        if (text.isEmpty()) return
+        if (text.isEmpty()) {
+            input.error = "Write something first"
+            return
+        }
         try {
             if (Mesh.publish(text) == null) {
-                log.text = "Start SocialMesh to post.\n" + log.text
+                say("Start SocialMesh to post.")
                 return
             }
             input.setText("")
             refreshFeed()
+            Toast.makeText(this, "Posted", Toast.LENGTH_SHORT).show()
         } catch (e: RuntimeException) {
-            log.text = "Post failed: ${e.message}\n" + log.text
+            say("Post failed: ${e.message}")
         }
     }
 
     private fun refreshFeed() {
+        feed.removeAllViews()
         val json = Mesh.feedJson(50)
         if (json == null) {
-            feed.text = ""
+            feed.addView(Ui.note(this, "Start SocialMesh to see posts."))
             return
         }
         val posts = JSONArray(json)
-        val time = DateFormat.getDateTimeInstance(DateFormat.SHORT, DateFormat.SHORT)
-        val sb = StringBuilder()
+        if (posts.length() == 0) {
+            feed.addView(Ui.note(this, "No posts yet. Write one, or bring another phone running SocialMesh close by."))
+            return
+        }
         for (i in 0 until posts.length()) {
             val p = posts.getJSONObject(i)
-            val who = when {
-                p.getBoolean("mine") -> "you"
-                p.isNull("author") -> "anonymous"
+            val author = when {
+                p.getBoolean("mine") -> "You"
+                p.isNull("author") -> "Anonymous"
                 else -> p.getString("author")
             }
-            sb.append(who).append(" · ").append(time.format(Date(p.getLong("created_ms")))).append('\n')
-            sb.append(p.getString("body")).append("\n\n")
+            feed.addView(
+                Ui.card(this).apply {
+                    addView(Ui.note(this@MainActivity, "$author · ${Ui.ago(p.getLong("created_ms"))}"))
+                    addView(Ui.text(this@MainActivity, p.getString("body"), 16f).apply { setTextIsSelectable(true) })
+                },
+            )
         }
-        feed.text = if (sb.isEmpty()) "No posts yet. Bring another phone running SocialMesh close by." else sb
     }
 
     companion object {
         private const val REQ_PERMISSIONS = 1
         private const val REQ_ENABLE = 2
         private const val REQ_MIC = 3
-        private const val PLAY = "Play newest post"
+        private const val PLAY = "Play"
         private const val LISTEN = "Listen"
     }
 }

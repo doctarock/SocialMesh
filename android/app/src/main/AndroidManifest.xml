@@ -29,6 +29,7 @@
 
     <application
         android:label="SocialMesh"
+        android:theme="@android:style/Theme.DeviceDefault.DayNight"
         android:allowBackup="false"
         android:supportsRtl="true">
         <!-- Viewing sites must not report anything about them to Google. -->
