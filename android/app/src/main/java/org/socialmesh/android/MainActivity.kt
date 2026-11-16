@@ -5,6 +5,7 @@ import android.app.Activity
 import android.bluetooth.BluetoothAdapter
 import android.bluetooth.BluetoothManager
 import android.content.Intent
+import android.content.pm.ApplicationInfo
 import android.content.pm.PackageManager
 import android.graphics.Typeface
 import android.os.Build
@@ -17,6 +18,7 @@ import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
 import org.json.JSONArray
+import java.io.File
 import java.text.DateFormat
 import java.util.Date
 
@@ -38,7 +40,11 @@ class MainActivity : Activity() {
     private lateinit var listen: Button
 
     /** Only while this screen is visible: the microphone is never on in the background. */
-    private val mic = Microphone { pcm, rate -> Mesh.hear(pcm, rate) }
+    private val mic by lazy {
+        // Debug builds keep the last two minutes heard, to find out why a post wasn't decoded.
+        val debuggable = applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE != 0
+        Microphone(if (debuggable) File(filesDir, "last-heard.wav") else null) { pcm, rate -> Mesh.hear(pcm, rate) }
+    }
 
     private val listener = Mesh.Listener { line -> runOnUiThread { onLine(line) } }
 

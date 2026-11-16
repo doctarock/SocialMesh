@@ -7,6 +7,10 @@ import android.media.AudioRecord
 import android.media.AudioTrack
 import android.media.MediaRecorder
 import android.util.Log
+import java.io.File
+import java.io.IOException
+import java.nio.ByteBuffer
+import java.nio.ByteOrder
 
 /**
  * Posts by sound: the node turns the newest public post into tones
@@ -75,8 +79,12 @@ internal object Speaker {
     private const val TAG = "SocialMeshSound"
 }
 
-/** Records while on, handing each piece (16-bit mono PCM, and its rate) to [onPcm]. */
-internal class Microphone(private val onPcm: (ByteArray, Int) -> Unit) {
+/**
+ * Records while on, handing each piece (16-bit mono PCM, and its rate) to
+ * [onPcm]. With [capture] set, the last two minutes are also written there
+ * as a WAV file, for working out why something wasn't heard (debug builds).
+ */
+internal class Microphone(private val capture: File? = null, private val onPcm: (ByteArray, Int) -> Unit) {
     @Volatile private var running = false
 
     val isOn: Boolean get() = running
@@ -89,6 +97,7 @@ internal class Microphone(private val onPcm: (ByteArray, Int) -> Unit) {
         running = true
         Thread({
             val buf = ShortArray(rate / 4) // a quarter second per piece
+            val kept = if (capture != null) Capture(rate) else null
             try {
                 rec.startRecording()
                 while (running) {
@@ -101,6 +110,7 @@ internal class Microphone(private val onPcm: (ByteArray, Int) -> Unit) {
                         bytes[2 * i] = v.toByte()
                         bytes[2 * i + 1] = (v shr 8).toByte()
                     }
+                    kept?.add(bytes)
                     onPcm(bytes, rate)
                 }
             } catch (e: Exception) {
@@ -112,6 +122,7 @@ internal class Microphone(private val onPcm: (ByteArray, Int) -> Unit) {
                 } catch (e: IllegalStateException) {
                 }
                 rec.release()
+                if (capture != null) kept?.save(capture)
             }
         }, "mesh-listen").start()
         return true
@@ -141,6 +152,34 @@ internal class Microphone(private val onPcm: (ByteArray, Int) -> Unit) {
             r.release()
         }
         return null
+    }
+
+    /** The newest two minutes of audio, kept in memory and written out as WAV when listening stops. */
+    private class Capture(private val rate: Int) {
+        private val pieces = ArrayDeque<ByteArray>()
+        private var bytes = 0
+
+        fun add(b: ByteArray) {
+            pieces.addLast(b)
+            bytes += b.size
+            while (bytes > rate * 2 * 120) bytes -= pieces.removeFirst().size
+        }
+
+        fun save(f: File) {
+            try {
+                f.outputStream().use { out ->
+                    val h = ByteBuffer.allocate(44).order(ByteOrder.LITTLE_ENDIAN)
+                    h.put("RIFF".toByteArray()).putInt(36 + bytes).put("WAVE".toByteArray())
+                    h.put("fmt ".toByteArray()).putInt(16).putShort(1).putShort(1)
+                    h.putInt(rate).putInt(rate * 2).putShort(2).putShort(16)
+                    h.put("data".toByteArray()).putInt(bytes)
+                    out.write(h.array())
+                    for (p in pieces) out.write(p)
+                }
+            } catch (e: IOException) {
+                Log.w(TAG, "couldn't save the capture", e)
+            }
+        }
     }
 
     companion object {
