@@ -1,7 +1,9 @@
 # SocialMesh
 A decentralized messaging and social network protocol
 
-> **Status:** v0.1 reference implementation in Rust (MIT). All six milestones work, including attachments (sealed, fetched from several peers at once, verified per chunk; anonymous files travel the anonymity route).
+> **Experimental proof of concept, not independently security-reviewed.** Keys are stored unencrypted on disk. Don't rely on it where your safety depends on it.
+>
+> **Status:** v0.1 reference implementation in Rust (MIT). All six milestones work, including attachments (sealed, fetched from several peers at once, verified per chunk; anonymous files travel the anonymity route). Phones sync over Bluetooth and Wi-Fi, and posts can travel as sound. Changes: [CHANGELOG.md](CHANGELOG.md).
 > Anonymous posts use stem/fluff routing so peers cannot tell who wrote them: [docs/ORIGIN-PRIVACY.md](docs/ORIGIN-PRIVACY.md).
 > All peer connections are encrypted (Noise, forward-secret); link observers still see who you connect to and when.
 > Not yet safe against state-level surveillance. Read [THREAT-MODEL.md](THREAT-MODEL.md).
