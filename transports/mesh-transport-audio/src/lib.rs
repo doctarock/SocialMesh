@@ -10,10 +10,10 @@
 //!
 //! ```text
 //! preamble (16 symbols, every tone once) | length, 3 times (6 symbols)
-//!   | data and 16 Reed–Solomon check bytes (2 symbols per byte) | silence
+//!   | data and 32 Reed–Solomon check bytes (2 symbols per byte) | silence
 //! ```
 //!
-//! The check bytes ([`rs`]) repair up to 8 bytes the room got wrong; the
+//! The check bytes ([`rs`]) repair up to 16 bytes the room got wrong; the
 //! length is sent three times and voted on, nibble by nibble.
 //!
 //! The receiver finds preambles by how much of each window's energy sits on
@@ -138,10 +138,14 @@ fn tone_power(x: &[f32], freq: f32, rate: u32) -> f32 {
     2.0 * mag2 / (x.len() as f32 * x.len() as f32)
 }
 
-/// Most likely tone in one symbol window. The first quarter of the window is
-/// skipped: that's where the previous symbol's echo lands.
+/// Most likely tone in one symbol window, read from its end: the start is
+/// where the previous symbol's echo lands. Measured in a real room the echo
+/// lasts well over 5 ms, so skip as much as possible while keeping the
+/// shortest window that still tells tones apart (one over the spacing:
+/// 10 ms), and at least a quarter.
 fn read_symbol(window: &[f32], p: &Profile, gain: &[f32; 16]) -> u8 {
-    let skip = window.len() / 4;
+    let resolve = (p.sample_rate as f32 / p.spacing_hz).ceil() as usize;
+    let skip = (window.len() / 4).max(window.len().saturating_sub(resolve));
     let w = &window[skip..];
     (0..16u8)
         .map(|t| (t, tone_power(w, p.tone_hz(t), p.sample_rate) / gain[t as usize]))
@@ -484,6 +488,23 @@ mod tests {
             y[i] += 0.33 * y[i - d];
         }
         y
+    }
+
+    /// The room the phones were first tested in: echo lasting past 10 ms.
+    /// Only the robust profile is meant for this.
+    #[test]
+    fn robust_survives_a_long_room_echo() {
+        let f = frames(6, 84, 16);
+        let p = Profile::ROBUST;
+        let audio = phone_to_phone(&modulate(&f, &p).unwrap(), p.sample_rate);
+        let mut room = audio.clone();
+        let d = (0.012 * p.sample_rate as f32) as usize;
+        for i in d..room.len() {
+            room[i] += 0.3 * audio[i - d];
+        }
+        let got = demodulate(&channel(&room, 20.0, 0.5, 17), &p);
+        let good = f.iter().filter(|x| got.contains(x)).count();
+        assert!(good >= 5, "only {good}/6 frames intact");
     }
 
     #[test]

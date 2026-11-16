@@ -1,6 +1,6 @@
-//! Reed–Solomon error correction for one modem frame: RS(255, 239) over
-//! GF(2^8) (primitive polynomial 0x11d, generator roots α^0 … α^15),
-//! shortened to the frame's length. [`PARITY`] check bytes repair up to 8
+//! Reed–Solomon error correction for one modem frame: RS(255, 223) over
+//! GF(2^8) (primitive polynomial 0x11d, generator roots α^0 … α^31),
+//! shortened to the frame's length. [`PARITY`] check bytes repair up to 16
 //! wrong bytes anywhere in the frame.
 //!
 //! Sound loses whole frames (handled by the datagram layer's fountain code)
@@ -8,7 +8,7 @@
 //! one before. Without this a single flipped symbol wastes a 4-second frame.
 
 /// Check bytes per frame.
-pub const PARITY: usize = 16;
+pub const PARITY: usize = 32;
 /// Largest frame: the code is at most 255 bytes long.
 pub const MAX_DATA: usize = 255 - PARITY;
 
@@ -203,7 +203,7 @@ mod tests {
     }
 
     #[test]
-    fn repairs_up_to_eight_errors_anywhere() {
+    fn repairs_up_to_sixteen_errors_anywhere() {
         let mut r = StdRng::seed_from_u64(1);
         for trial in 0..400 {
             let len = r.gen_range(1..=MAX_DATA);
@@ -230,8 +230,8 @@ mod tests {
             let data: Vec<u8> = (0..84).map(|_| r.gen()).collect();
             let clean = encode(&data);
             let mut c = clean.clone();
-            for i in 0..12 {
-                c[i * 7] ^= r.gen_range(1..=255u8);
+            for i in 0..24 {
+                c[i * 3] ^= r.gen_range(1..=255u8);
             }
             // Either refused, or (rarely) "repaired" into some other codeword;
             // never the original. The datagram checksum catches the latter.
