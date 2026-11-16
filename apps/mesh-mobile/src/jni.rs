@@ -294,3 +294,73 @@ pub extern "system" fn Java_org_socialmesh_android_Native_siteFile(
     out.extend_from_slice(&f.data);
     env.byte_array_from_slice(&out).map(|a| a.into_raw()).unwrap_or(std::ptr::null_mut())
 }
+
+/// This device's site keys, as JSON (see `Mobile::my_sites_json`).
+#[no_mangle]
+pub extern "system" fn Java_org_socialmesh_android_Native_mySitesJson(mut env: JNIEnv, _: JClass, handle: jlong) -> jstring {
+    let Some(m) = mobile(handle) else { return std::ptr::null_mut() };
+    match m.my_sites_json() {
+        Ok(json) => string(&mut env, &json),
+        Err(e) => {
+            throw(&mut env, format!("{e:#}"));
+            std::ptr::null_mut()
+        }
+    }
+}
+
+/// `files` packed as repeated `u16 path_len | path (UTF-8) | u32 len | bytes`.
+fn unpack_files(b: &[u8]) -> Option<Vec<(String, Vec<u8>)>> {
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < b.len() {
+        let n = u16::from_be_bytes(b.get(i..i + 2)?.try_into().ok()?) as usize;
+        let path = String::from_utf8(b.get(i + 2..i + 2 + n)?.to_vec()).ok()?;
+        i += 2 + n;
+        let len = u32::from_be_bytes(b.get(i..i + 4)?.try_into().ok()?) as usize;
+        let data = b.get(i + 4..i + 4 + len)?.to_vec();
+        i += 4 + len;
+        out.push((path, data));
+    }
+    Some(out)
+}
+
+/// Publish a site. `key` names one of this device's site keys (a new
+/// version), or is null for a new site; `ownerless` publishes with no key.
+/// Throws with a message starting `METADATA ` for a file whose hidden
+/// details can't be removed (retry with `keepMetadata` if the user agrees).
+#[no_mangle]
+#[allow(clippy::too_many_arguments)]
+pub extern "system" fn Java_org_socialmesh_android_Native_publishSite(
+    mut env: JNIEnv,
+    _: JClass,
+    handle: jlong,
+    key: JString,
+    ownerless: jboolean,
+    title: JString,
+    index: JString,
+    files: JByteArray,
+    keep_metadata: jboolean,
+) -> jstring {
+    let Some(m) = mobile(handle) else { return std::ptr::null_mut() };
+    let key = if key.is_null() { None } else { jstr(&mut env, &key) };
+    let (Some(title), Some(index)) = (jstr(&mut env, &title), jstr(&mut env, &index)) else {
+        throw(&mut env, "bad title or index");
+        return std::ptr::null_mut();
+    };
+    let Some(files) = env.convert_byte_array(&files).ok().and_then(|b| unpack_files(&b)) else {
+        throw(&mut env, "bad file list");
+        return std::ptr::null_mut();
+    };
+    let target = match (&key, ownerless != JNI_FALSE) {
+        (_, true) => crate::SiteTarget::Ownerless,
+        (Some(k), false) => crate::SiteTarget::Update(k),
+        (None, false) => crate::SiteTarget::New,
+    };
+    match m.publish_site(target, &title, &index, files, keep_metadata != JNI_FALSE) {
+        Ok(line) => string(&mut env, &line),
+        Err(e) => {
+            throw(&mut env, format!("{e:#}"));
+            std::ptr::null_mut()
+        }
+    }
+}

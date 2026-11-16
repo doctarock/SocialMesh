@@ -26,7 +26,18 @@ class SitesActivity : Activity() {
             orientation = LinearLayout.VERTICAL
             setPadding(pad, pad, pad, pad)
         }
-        setContentView(ScrollView(this).apply { addView(list) })
+        val publish = android.widget.Button(this).apply {
+            text = "Publish a site"
+            setOnClickListener { startActivity(Intent(this@SitesActivity, PublishSiteActivity::class.java)) }
+        }
+        setContentView(
+            LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                setPadding(pad, pad / 2, pad, 0)
+                addView(publish, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
+                addView(ScrollView(this@SitesActivity).apply { addView(list) }, LinearLayout.LayoutParams(MATCH_PARENT, 0, 1f))
+            },
+        )
     }
 
     override fun onStart() {

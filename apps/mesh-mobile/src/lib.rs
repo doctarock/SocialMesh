@@ -25,9 +25,11 @@ use tokio::sync::{broadcast, mpsc};
 
 pub mod jni;
 mod site;
+mod site_publish;
 mod sound;
 
 pub use site::ViewFile;
+pub use site_publish::SiteTarget;
 
 #[derive(Clone, Copy, Debug)]
 pub struct Options {
@@ -46,6 +48,7 @@ pub struct Mobile {
     radio_events: mpsc::Sender<BleEvent>,
     node_events: Mutex<broadcast::Receiver<NodeEvent>>,
     me: Keypair,
+    home: std::path::PathBuf,
     ears: Mutex<sound::Ears>,
     rt: tokio::runtime::Runtime,
 }
@@ -85,6 +88,7 @@ impl Mobile {
             radio_events: host.events,
             node_events: Mutex::new(node_events),
             me,
+            home: home.to_path_buf(),
             ears: Mutex::new(sound::Ears::default()),
             rt,
         })

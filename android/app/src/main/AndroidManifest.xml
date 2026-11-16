@@ -45,6 +45,10 @@
         </activity>
         <activity android:name=".SitesActivity" android:exported="false" />
         <activity
+            android:name=".PublishSiteActivity"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboardHidden"
+            android:exported="false" />
+        <activity
             android:name=".SiteActivity"
             android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboardHidden"
             android:exported="false" />

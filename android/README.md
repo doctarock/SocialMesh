@@ -12,8 +12,8 @@ sync posts, with no accounts, no internet and no setup.
 - `app/.../MeshService.kt`: keeps the node running in the background, with
   a notification showing the number of links and a Stop button.
 - `app/.../Sound.kt`: speaker and microphone for posts by sound.
-- `app/.../SitesActivity.kt`, `SiteActivity.kt`: the list of sites and the
-  safe viewer.
+- `app/.../SitesActivity.kt`, `SiteActivity.kt`, `PublishSiteActivity.kt`:
+  the list of sites, the safe viewer, and publishing.
 - `app/.../MainActivity.kt`: post, feed, play/listen, and a log of what the
   radio does.
 
@@ -80,8 +80,14 @@ from nearby phones and computers like posts do. Opening one shows it with
 scripts off and nothing loaded from the network: every request is answered
 by the app from the site's own files, Google Safe Browsing lookups and
 WebView metrics are off, and a link to an outside website opens only after
-you confirm, in your own browser. Publishing sites from the phone comes
-later; use `mesh site publish` on a computer.
+you confirm, in your own browser.
+
+**Publish a site** turns a folder or a `.zip` of web pages into a site: a new
+one (with its own key, kept on the phone), a new version of one of yours
+(only changed files travel), or an anonymous one that can never be updated.
+Photos lose their hidden location and camera details on the way out; files
+whose details can't be removed (SVG, PDF) are published only if you agree.
+Site keys are stored like the command line's (`sites/<name>.key`).
 
 ## Known limits
 

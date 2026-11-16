@@ -123,6 +123,11 @@ object Mesh {
 
     fun siteFile(address: String, path: String): ByteArray? = call { Native.siteFile(it, address, path) }
 
+    fun mySitesJson(): String? = call { Native.mySitesJson(it) }
+
+    fun publishSite(key: String?, ownerless: Boolean, title: String, index: String, files: ByteArray, keepMetadata: Boolean): String? =
+        call { Native.publishSite(it, key, ownerless, title, index, files, keepMetadata) }
+
     /** The latest lines, oldest first. */
     fun recentLines(): List<String> = synchronized(recent) { recent.toList() }
 

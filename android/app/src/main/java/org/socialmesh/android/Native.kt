@@ -58,4 +58,22 @@ object Native {
 
     /** One file for the viewer, packed (see SiteActivity.unpack), or null. */
     @JvmStatic external fun siteFile(handle: Long, address: String, path: String): ByteArray?
+
+    /** This device's site keys: JSON array of {key, address, short, title, version}. */
+    @JvmStatic external fun mySitesJson(handle: Long): String?
+
+    /**
+     * Publish a site: a new version of the site under [key], a new site if [key] is null, or an
+     * anonymous one if [ownerless]. [files] are packed (see PublishSiteActivity.pack). Throws with
+     * a message starting "METADATA " for a file whose hidden details can't be removed.
+     */
+    @JvmStatic external fun publishSite(
+        handle: Long,
+        key: String?,
+        ownerless: Boolean,
+        title: String,
+        index: String,
+        files: ByteArray,
+        keepMetadata: Boolean,
+    ): String?
 }

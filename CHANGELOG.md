@@ -20,6 +20,9 @@
   lookups and WebView metrics off, and outside links opened only after a
   prompt. Tested on a phone: a site and its update arrived over Wi-Fi from a
   computer, and a tracking image was blocked before any request was made.
+- Android: publish a folder or `.zip` as a site (new, update, or anonymous),
+  with photo metadata stripped. Tested on a phone, including a version 2
+  update with a real photo whose GPS data was removed.
 
 ## 0.1.0 (2026-11-16)
 
