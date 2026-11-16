@@ -37,4 +37,13 @@ object Native {
 
     /** "posting-id link-key" (short forms). */
     @JvmStatic external fun ids(handle: Long): String?
+
+    /** The newest public post as sound: 16-bit mono PCM, 8 kHz. Throws if nothing is public. */
+    @JvmStatic external fun soundOfNewest(handle: Long, fast: Boolean): ByteArray?
+
+    /** Microphone audio (16-bit mono PCM at [rate]). Returns lines to show, newline-separated, or null. */
+    @JvmStatic external fun hear(handle: Long, pcm: ByteArray, rate: Int): String?
+
+    /** Forget partly heard sound. */
+    @JvmStatic external fun stopHearing(handle: Long)
 }

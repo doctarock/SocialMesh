@@ -97,6 +97,19 @@ object Mesh {
     /** "posting-id link-key" (short forms). */
     fun ids(): String? = call { Native.ids(it) }
 
+    /** The newest public post as 8 kHz PCM, or null if the node isn't running. Throws if nothing is public. */
+    fun soundOfNewest(fast: Boolean): ByteArray? = call { Native.soundOfNewest(it, fast) }
+
+    /** Microphone audio; anything worth saying about it is said to the listeners. */
+    fun hear(pcm: ByteArray, rate: Int) {
+        val lines = call { Native.hear(it, pcm, rate) } ?: return
+        for (l in lines.split('\n')) say(l)
+    }
+
+    fun stopHearing() {
+        call { Native.stopHearing(it) }
+    }
+
     /** The latest lines, oldest first. */
     fun recentLines(): List<String> = synchronized(recent) { recent.toList() }
 

@@ -34,6 +34,11 @@ class MainActivity : Activity() {
     private lateinit var input: EditText
     private lateinit var feed: TextView
     private lateinit var log: TextView
+    private lateinit var play: Button
+    private lateinit var listen: Button
+
+    /** Only while this screen is visible: the microphone is never on in the background. */
+    private val mic = Microphone { pcm, rate -> Mesh.hear(pcm, rate) }
 
     private val listener = Mesh.Listener { line -> runOnUiThread { onLine(line) } }
 
@@ -47,6 +52,19 @@ class MainActivity : Activity() {
             text = "Post"
             setOnClickListener { publish() }
         }
+        play = Button(this).apply {
+            text = PLAY
+            setOnClickListener { playNewest() }
+        }
+        listen = Button(this).apply {
+            text = LISTEN
+            setOnClickListener { toggleListening() }
+        }
+        val sound = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            addView(play, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
+            addView(listen, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
+        }
         feed = TextView(this).apply { setPadding(0, pad, 0, pad) }
         log = TextView(this).apply {
             typeface = Typeface.MONOSPACE
@@ -59,6 +77,7 @@ class MainActivity : Activity() {
             addView(toggle)
             addView(input, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
             addView(post)
+            addView(sound, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
             addView(feed)
             addView(log)
         }
@@ -74,8 +93,63 @@ class MainActivity : Activity() {
     }
 
     override fun onStop() {
+        stopListening()
         Mesh.removeListener(listener)
         super.onStop()
+    }
+
+    private fun playNewest() {
+        if (Speaker.isPlaying) return
+        val pcm = try {
+            Mesh.soundOfNewest(false)
+        } catch (e: RuntimeException) {
+            log.text = "Can't play: ${e.message}\n" + log.text
+            return
+        }
+        if (pcm == null) {
+            log.text = "Start SocialMesh to play posts.\n" + log.text
+            return
+        }
+        val seconds = pcm.size / 2 / 8000
+        Mesh.report("Playing the newest post as sound (${seconds}s)")
+        play.text = "Playing…"
+        play.isEnabled = false
+        Speaker.play(pcm) {
+            runOnUiThread {
+                play.text = PLAY
+                play.isEnabled = true
+            }
+        }
+    }
+
+    private fun toggleListening() {
+        if (mic.isOn) {
+            stopListening()
+        } else if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
+            requestPermissions(arrayOf(Manifest.permission.RECORD_AUDIO), REQ_MIC)
+        } else {
+            startListening()
+        }
+    }
+
+    private fun startListening() {
+        if (!Mesh.running) {
+            log.text = "Start SocialMesh to listen.\n" + log.text
+            return
+        }
+        if (mic.start()) {
+            listen.text = "Stop listening"
+            Mesh.report("Listening for posts by sound")
+        } else {
+            log.text = "Couldn't open the microphone.\n" + log.text
+        }
+    }
+
+    private fun stopListening() {
+        if (!mic.isOn) return
+        mic.stop()
+        Mesh.stopHearing()
+        listen.text = LISTEN
     }
 
     private fun toggleNode() {
@@ -108,6 +182,14 @@ class MainActivity : Activity() {
 
     override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, results: IntArray) {
         super.onRequestPermissionsResult(requestCode, permissions, results)
+        if (requestCode == REQ_MIC) {
+            if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
+                startListening()
+            } else {
+                log.text = "Microphone permission is needed to hear posts.\n" + log.text
+            }
+            return
+        }
         if (requestCode != REQ_PERMISSIONS) return
         if (neededPermissions().all { checkSelfPermission(it) == PackageManager.PERMISSION_GRANTED }) {
             ensureBluetoothOn()
@@ -204,5 +286,8 @@ class MainActivity : Activity() {
     companion object {
         private const val REQ_PERMISSIONS = 1
         private const val REQ_ENABLE = 2
+        private const val REQ_MIC = 3
+        private const val PLAY = "Play newest post"
+        private const val LISTEN = "Listen"
     }
 }

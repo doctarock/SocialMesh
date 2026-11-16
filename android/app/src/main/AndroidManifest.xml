@@ -19,6 +19,9 @@
     <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
     <uses-permission android:name="android.permission.CHANGE_WIFI_MULTICAST_STATE" />
 
+    <!-- Hearing posts played as sound (only while the app is on screen). -->
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+
     <!-- Running in the background (MeshService), with its notification. -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />

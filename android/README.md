@@ -11,7 +11,9 @@ sync posts, with no accounts, no internet and no setup.
   `libsocialmesh.so`); `Mesh.kt` owns the one running node.
 - `app/.../MeshService.kt`: keeps the node running in the background, with
   a notification showing the number of links and a Stop button.
-- `app/.../MainActivity.kt`: post, feed, and a log of what the radio does.
+- `app/.../Sound.kt`: speaker and microphone for posts by sound.
+- `app/.../MainActivity.kt`: post, feed, play/listen, and a log of what the
+  radio does.
 
 Needs Android 10 (API 29) or newer: that's when Android got L2CAP
 connection-oriented channels.
@@ -60,6 +62,14 @@ The emulator has no Bluetooth radio; use real phones.
 - Post on one phone; it appears on the other.
 - Phones on the same Wi-Fi also link over the LAN; the log names each
   medium.
+
+## Posts by sound
+
+On one phone tap **Play newest post**; on another, nearby, tap **Listen**
+(it asks for the microphone). A short post takes about 30 seconds of
+warbling tones; the listener shows `Hearing a post by sound…`, then
+`New post by sound`. Anyone in earshot can hear it, so only public posts
+are played. Turn the volume up; a quiet room helps.
 
 ## Known limits
 

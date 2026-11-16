@@ -24,6 +24,7 @@ use std::time::Duration;
 use tokio::sync::{broadcast, mpsc};
 
 pub mod jni;
+mod sound;
 
 #[derive(Clone, Copy, Debug)]
 pub struct Options {
@@ -42,6 +43,7 @@ pub struct Mobile {
     radio_events: mpsc::Sender<BleEvent>,
     node_events: Mutex<broadcast::Receiver<NodeEvent>>,
     me: Keypair,
+    ears: Mutex<sound::Ears>,
     rt: tokio::runtime::Runtime,
 }
 
@@ -80,6 +82,7 @@ impl Mobile {
             radio_events: host.events,
             node_events: Mutex::new(node_events),
             me,
+            ears: Mutex::new(sound::Ears::default()),
             rt,
         })
     }

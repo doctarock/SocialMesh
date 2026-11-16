@@ -140,10 +140,40 @@ fn read_symbol(window: &[f32], p: &Profile) -> u8 {
 /// Find every frame in `samples` and return its bytes. Damaged frames come
 /// back too (the datagram checksum rejects them); missing ones don't.
 pub fn demodulate(samples: &[f32], p: &Profile) -> Vec<Vec<u8>> {
+    scan(samples, p).0
+}
+
+/// Live decoding: feed audio as it arrives (from a microphone) and get each
+/// frame once, as soon as all of it has been heard. Holds at most one
+/// frame's worth of audio between calls.
+pub struct Demodulator {
+    profile: Profile,
+    buf: Vec<f32>,
+}
+
+impl Demodulator {
+    pub fn new(profile: Profile) -> Demodulator {
+        Demodulator { profile, buf: Vec::new() }
+    }
+
+    /// Add samples at the profile's rate; returns the frames they completed.
+    pub fn push(&mut self, samples: &[f32]) -> Vec<Vec<u8>> {
+        self.buf.extend_from_slice(samples);
+        let (frames, done) = scan(&self.buf, &self.profile);
+        self.buf.drain(..done);
+        frames
+    }
+}
+
+/// Frames in `samples`, and how far the samples are finished with: a frame
+/// can't start before that point and still be unread. Everything after it
+/// (a frame cut off by the end, or the tail too short to search) is needed
+/// again once more audio arrives.
+fn scan(samples: &[f32], p: &Profile) -> (Vec<Vec<u8>>, usize) {
     let n = p.symbol_samples;
     let pre_len = PREAMBLE.len() * n;
     if samples.len() < pre_len {
-        return Vec::new();
+        return (Vec::new(), 0);
     }
     // All 16 tone powers on a grid of `step`-spaced, symbol-long windows,
     // computed once. A preamble at grid point g puts PREAMBLE[i] in window
@@ -204,12 +234,13 @@ pub fn demodulate(samples: &[f32], p: &Profile) -> Vec<Vec<u8>> {
             *at += 2 * n;
             Some(hi << 4 | lo)
         };
-        let Some(len) = byte(&mut at) else { break };
+        let Some(len) = byte(&mut at) else { return (frames, start) };
         let mut f = Vec::with_capacity(len as usize);
         for _ in 0..len {
             match byte(&mut at) {
                 Some(b) => f.push(b),
-                None => break,
+                // Cut off by the end of the samples: keep it for next time.
+                None => return (frames, start),
             }
         }
         let resume = if f.len() == len as usize && len > 0 {
@@ -221,7 +252,7 @@ pub fn demodulate(samples: &[f32], p: &Profile) -> Vec<Vec<u8>> {
         };
         g = resume.div_ceil(step);
     }
-    frames
+    (frames, (g.min(last_g) * step).min(samples.len()))
 }
 
 // ---------------------------------------------------------------- files
@@ -356,6 +387,26 @@ mod tests {
         assert!(demodulate(&vec![0.0; 16000], &Profile::FAST).is_empty());
         let noise = channel(&vec![0.0; 16000], -10.0, 1.0, 6);
         assert!(demodulate(&noise, &Profile::FAST).is_empty());
+    }
+
+    /// Audio in odd-sized pieces, as a microphone delivers it: every frame
+    /// comes out exactly once, and little audio is held between pieces.
+    #[test]
+    fn live_decoding_in_pieces() {
+        let f = frames(6, 84, 10);
+        let audio = channel(&modulate(&f, &Profile::ROBUST).unwrap(), 12.0, 0.4, 11);
+        let mut d = Demodulator::new(Profile::ROBUST);
+        let mut r = StdRng::seed_from_u64(12);
+        let (mut got, mut at) = (Vec::new(), 0);
+        while at < audio.len() {
+            let n = r.gen_range(1..6000).min(audio.len() - at);
+            got.extend(d.push(&audio[at..at + n]));
+            at += n;
+            let longest = Profile::ROBUST.frame_seconds(255) * 8000.0;
+            assert!(d.buf.len() as f32 <= longest + 6000.0, "holding {} samples", d.buf.len());
+        }
+        got.extend(d.push(&vec![0.0; 8000])); // trailing silence
+        assert_eq!(got, f);
     }
 
     #[test]

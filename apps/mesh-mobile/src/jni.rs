@@ -164,3 +164,48 @@ pub extern "system" fn Java_org_socialmesh_android_Native_ids(mut env: JNIEnv, _
     let (me, link) = m.ids();
     string(&mut env, &format!("{me} {link}"))
 }
+
+/// The newest public post as 16-bit little-endian PCM, mono, 8000 Hz.
+#[no_mangle]
+pub extern "system" fn Java_org_socialmesh_android_Native_soundOfNewest(
+    mut env: JNIEnv,
+    _: JClass,
+    handle: jlong,
+    fast: jboolean,
+) -> jbyteArray {
+    let Some(m) = mobile(handle) else { return std::ptr::null_mut() };
+    match m.sound_of_newest(fast != JNI_FALSE) {
+        Ok(pcm) => env.byte_array_from_slice(&pcm).map(|a| a.into_raw()).unwrap_or(std::ptr::null_mut()),
+        Err(e) => {
+            throw(&mut env, format!("{e:#}"));
+            std::ptr::null_mut()
+        }
+    }
+}
+
+/// Microphone audio (16-bit little-endian PCM, mono, `rate` Hz). Returns
+/// lines worth showing, newline-separated, or null.
+#[no_mangle]
+pub extern "system" fn Java_org_socialmesh_android_Native_hear(
+    mut env: JNIEnv,
+    _: JClass,
+    handle: jlong,
+    pcm: JByteArray,
+    rate: jint,
+) -> jstring {
+    let Some(m) = mobile(handle) else { return std::ptr::null_mut() };
+    let Ok(pcm) = env.convert_byte_array(&pcm) else { return std::ptr::null_mut() };
+    let lines = m.hear(&pcm, rate.max(1) as u32);
+    if lines.is_empty() {
+        std::ptr::null_mut()
+    } else {
+        string(&mut env, &lines.join("\n"))
+    }
+}
+
+#[no_mangle]
+pub extern "system" fn Java_org_socialmesh_android_Native_stopHearing(_: JNIEnv, _: JClass, handle: jlong) {
+    if let Some(m) = mobile(handle) {
+        m.stop_hearing();
+    }
+}

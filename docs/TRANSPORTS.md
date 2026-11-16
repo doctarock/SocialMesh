@@ -25,7 +25,7 @@ So a new medium adds **reach** without adding **trust**.
 | Bluetooth LE | BLE advertisement w/ service UUID | L2CAP CoC stream / GATT pipe | ~10–100 KB/s | Android, iOS, desktop | **core done**; Android driver written, awaiting phone testing; iOS / Windows next |
 | NFC | NDEF tag/tap carrying `mesh1:` | — (hands off to BLE/Wi-Fi) | tiny | Android, iOS (read) | planned |
 | QR code | camera scan of `mesh1:` | — | tiny | all with camera | planned |
-| Audio (speaker → mic, calls, radio) | — | 16-FSK modem + fountain-coded datagrams, one way | 25–50 bytes/s | all with speaker+mic | **WAV files done**; live speaker/mic next |
+| Audio (speaker → mic, calls, radio) | — | 16-FSK modem + fountain-coded datagrams, one way | 25–50 bytes/s | all with speaker+mic | **WAV files and live on Android done** |
 | Mesh radio (LoRa etc.) | — | packet stream | very low | add-on hardware | later |
 
 ## Using every medium at once
@@ -160,8 +160,13 @@ voice message. Tones sit in the voice band (1–2.5 kHz).
 - Not encrypted, and the transmitter can be located by ear. Only public
   posts are sent; posts still on the private route are refused.
 
-Next: live speaker/microphone, and the same datagram frames over LoRa and
-animated QR codes.
+Live on Android: **Play newest post** sends it out of the speaker and
+**Listen** decodes the microphone as it records (both modem speeds at once),
+verifies what it hears and keeps it, after which the node passes it on like
+any other post. The microphone is only on while the app is on screen.
+
+Next: the same on desktop (`mesh audio play` / `listen`), and the same
+datagram frames over LoRa and animated QR codes.
 
 ## Privacy rule for every medium
 
