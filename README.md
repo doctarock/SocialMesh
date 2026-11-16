@@ -83,11 +83,24 @@ mesh audio send rally.wav --latest 2    # newest public posts as sound (about 30
 mesh audio receive recording.wav        # any recording, any sample rate; every post is verified
 ```
 
+Sites: a folder of web pages published like a post and passed around the same way, with no server
+and no domain name. A site's address is its own key, separate from your identity; only that key can
+publish new versions. Viewing runs no scripts and loads nothing from outside the site
+([SPEC.md §10](SPEC.md)).
+
+```sh
+mesh site new pamphlet                                   # a key for the site (its address)
+mesh site publish ./my-site --key pamphlet --title "Local water plan"
+mesh site list                                           # sites you hold, newest version of each
+mesh site view 27B5                                      # opens a safe local viewer for your browser
+mesh export stick.bundle                                 # posts, photos and sites, for a USB stick
+```
+
 Bluetooth LE: phones in range find each other and link up by themselves, with no identity in the
 advert and the radio address changing whenever the link key does. The protocol side is done and tested
 on a simulated radio (`mesh-transport-ble`); each platform needs a small driver for its Bluetooth API
 (Android, iOS, Windows, Linux). The Android driver and a test app are in [android/](android/README.md),
-running on a real phone; linking two real phones is not yet tested. See [docs/TRANSPORTS.md](docs/TRANSPORTS.md).
+tested between two real phones. See [docs/TRANSPORTS.md](docs/TRANSPORTS.md).
 
 Use `--home <dir>` (or `MESH_HOME`) to run several nodes on one machine. `mesh run --no-beacon` listens for nearby nodes without announcing yourself.
 

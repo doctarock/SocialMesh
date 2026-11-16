@@ -7,6 +7,7 @@
 
 pub mod blob;
 pub mod codec;
+pub mod site;
 pub mod strip;
 
 use codec::{DecodeError, Reader, Writer};

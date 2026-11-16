@@ -644,6 +644,7 @@ dependencies = [
  "mesh-discovery",
  "mesh-node",
  "mesh-object",
+ "mesh-site",
  "mesh-store",
  "mesh-transport",
  "mesh-transport-audio",
@@ -742,6 +743,17 @@ dependencies = [
  "snow",
  "thiserror 2.0.21",
  "tokio",
+]
+
+[[package]]
+name = "mesh-site"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "mesh-crypto",
+ "mesh-object",
+ "mesh-store",
+ "tempfile",
 ]
 
 [[package]]

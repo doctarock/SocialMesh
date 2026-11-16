@@ -177,7 +177,36 @@ subscribable, advisory, and local (README §16).
 ## Malicious content
 
 Bodies are displayed as plain text. Attachments are untrusted bytes. No remote
-HTML or script is ever executed.
+script is ever executed.
+
+### Sites (SPEC.md §10)
+
+Sites are HTML and CSS written by anyone, so they are shown under strict
+rules: no scripts, nothing loaded from outside the site, no redirects, no
+forms. What that protects against, and what it doesn't:
+
+- **Tracking pixels and phoning home.** An image, font or stylesheet pointing
+  at a server would tell that server your IP address the moment you open the
+  site, which on its own could unmask readers of a political page. Viewers
+  block every outside request, including prefetch and DNS prefetch, and strip
+  `<meta http-equiv>` so a page can't redirect itself somewhere.
+- **Links you click still go out.** A link to an ordinary website is just a
+  link: following it connects you to that website, like any browser would.
+  Viewers ask first.
+- **The local viewer.** The command-line viewer serves a site to your browser
+  on 127.0.0.1. Every URL carries a random token and the `Host` header is
+  checked, so a web page or program elsewhere on the machine can't read
+  which sites you have or what is in them.
+- **Who published it.** A keyed site is signed by its own key, not your
+  posting identity. Publishing still announces it from your device, like a
+  signed post; the private route (SPEC.md §5.5) works for sites as for posts.
+- **Who reads it.** Fetching a site's files reveals interest to the peers you
+  ask, as for any attachment (see "Attachments" above).
+- **Content.** A site can say anything: impersonate a party, link to malware
+  or lie. The address (its key) is the only proof of who controls a site;
+  titles prove nothing.
+- **Apps (scripts) are not supported.** Running code from strangers needs its
+  own sandbox and threat model first.
 
 ## Known gaps to close before public use
 

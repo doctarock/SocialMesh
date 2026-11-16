@@ -1,0 +1,17 @@
+[package]
+name = "mesh-site"
+description = "SocialMesh sites: static websites published as objects, with a safe local viewer"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+mesh-crypto.workspace = true
+mesh-object.workspace = true
+mesh-store.workspace = true
+anyhow.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

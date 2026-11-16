@@ -16,6 +16,8 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
+mod site;
+
 #[derive(Parser)]
 #[command(name = "mesh", version, about = "SocialMesh: a decentralised, device-hosted social protocol")]
 struct Cli {
@@ -172,10 +174,22 @@ enum Cmd {
         #[command(subcommand)]
         cmd: ObjectCmd,
     },
-    /// Write shareable objects to an offline bundle file.
-    Export { file: PathBuf },
+    /// Write shareable objects, with their attachments and site files, to an
+    /// offline bundle file.
+    Export {
+        file: PathBuf,
+        /// Objects only, no attachment or site files (much smaller).
+        #[arg(long)]
+        no_files: bool,
+    },
     /// Verify and import objects from an offline bundle file.
     Import { file: PathBuf },
+    /// Sites: folders of web pages published and passed around like posts,
+    /// viewed with no scripts and nothing loaded from outside.
+    Site {
+        #[command(subcommand)]
+        cmd: site::SiteCmd,
+    },
     /// Move posts by sound, one way: write them as audio to play near another
     /// device (or over a call, radio or PA), or read them from a recording.
     Audio {
@@ -426,19 +440,20 @@ async fn main() -> Result<()> {
                 }
             }
         }
-        Cmd::Export { file } => {
+        Cmd::Export { file, no_files } => {
             let store = Store::open(&home)?;
             let mut f = std::io::BufWriter::new(fs::File::create(&file)?);
-            let n = mesh_transport_file::export(&store, true, &mut f)?;
-            println!("Exported {n} objects to {}", file.display());
+            let r = mesh_transport_file::export(&store, true, !no_files, &mut f)?;
+            println!("Exported {} objects and {} file pieces to {}", r.objects, r.blobs, file.display());
             Ok(())
         }
         Cmd::Audio { cmd } => audio(&home, cmd),
+        Cmd::Site { cmd } => site::run(&home, cmd),
         Cmd::Import { file } => {
             let store = Store::open(&home)?;
             let mut f = std::io::BufReader::new(fs::File::open(&file)?);
             let r = mesh_transport_file::import(&store, &mut f)?;
-            println!("Imported {} new, {} already present, {} rejected", r.new, r.duplicate, r.rejected);
+            println!("Imported {} new, {} already present, {} rejected, {} file pieces", r.new, r.duplicate, r.rejected, r.blobs);
             Ok(())
         }
     }

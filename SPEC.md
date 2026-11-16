@@ -382,11 +382,15 @@ node's own signed posts are never evicted.
 ## 6. Offline bundle
 
 ```
-"SMBUNDLE" || u8 version(=1) || u32 count || count × ( u32 len || object )
+"SMBUNDLE" || u8 version || u32 count || count × ( u32 len || object )
+            [ version 2: || u32 blob_count || blob_count × blob ]
 ```
 
-Each object is verified exactly as if it had arrived over the network. An
-invalid entry is skipped, not fatal.
+Version 1 carries objects only (datagram media, §8). Version 2 adds the
+blobs (§4) of the objects' attachments, so photos and site files (§10)
+travel on a USB stick too. Each object is verified exactly as if it had
+arrived over the network; an invalid entry is skipped, not fatal. Blobs are
+named by their hash and held as cache, as if a peer had sent them.
 
 ## 7. Discovery
 
@@ -527,3 +531,100 @@ to it is open. A device not heard for 60 s is not dialled.
 Whenever the node replaces its link key (§5.0) the radio MUST switch to a
 new random address and the advert MUST get a new token, so an observer
 can't link the old key to the new one by address.
+
+## 10. Sites
+
+A site is a set of files (HTML, CSS, images, media) published as one object
+and passed around like any other: over every medium, through relays, in
+offline bundles. There is no server and no DNS. Its files are ordinary sealed
+attachments (§4), so relays carry them without being able to read them.
+
+### 10.1 Site object
+
+An object (§3) with:
+
+- `kind` = `site`;
+- `body_type` = `application/vnd.socialmesh.site`;
+- `body` = the site manifest (§10.2);
+- one attachment per file, `media_type` set to the file's type;
+- `parent` absent.
+
+A site is either:
+
+- **keyed**: signed by a **site key**, an Ed25519 keypair made for this site
+  alone. Its address is the site key's identity ID (§1.2). Only the key's
+  holder can publish new versions. The site key SHOULD NOT be the author's
+  posting identity: a site is not linked to who wrote it unless they say so;
+- **ownerless**: unsigned. Its address is its object ID. It can never be
+  updated; a changed site is a different site.
+
+Text form of an address: `site:` followed by the 66 hex characters of the
+identity ID or object ID. The UI may show a short form (§1.1).
+
+### 10.2 Manifest
+
+UTF-8 text, lines ending in LF, no trailing whitespace, in this order:
+
+```
+socialmesh-site 1
+version <u64>
+title <text>
+index <path>
+file <attachment index> <path>
+…
+```
+
+- `version`: for a keyed site, strictly greater than every earlier version
+  the author published. Ownerless sites use `1`.
+- `title`: 1–200 characters to the end of the line, no control characters.
+- `index`: the page shown first; MUST be one of the files.
+- `file` lines: one per attachment, in ascending byte order of `path`. Every
+  attachment is listed exactly once.
+- A `path` is 1–255 bytes of segments joined by `/`. Each segment is 1 or
+  more characters from `[A-Za-z0-9._~-]` and is not `.` or `..`. Paths are
+  case-sensitive and unique.
+
+Anything else (another first line, an unknown keyword, a bad path, a
+duplicate) makes the object an invalid site: receivers MUST NOT show it,
+and MAY still relay it as an object.
+
+### 10.3 Versions
+
+For a keyed site, viewers show the version with the highest `version`
+among the site objects signed by that key; on a tie, the one with the
+smallest object ID. Old versions stay ordinary objects and age out of
+caches like anything else.
+
+A publisher SHOULD reuse an earlier version's attachment (same manifest
+blob and key) for any file whose content is unchanged, so an update only
+moves the files that changed.
+
+### 10.4 Viewing
+
+Sites are untrusted. A viewer MUST:
+
+- run no scripts (no `<script>`, no event handler attributes, no
+  `javascript:` URLs);
+- load nothing from outside the site: no network requests of any kind for
+  images, styles, fonts, media, frames, prefetch or DNS prefetch. A site's
+  links to elsewhere are followed only when the user clicks one, and SHOULD
+  be confirmed first;
+- ignore `<meta http-equiv>` (refresh can't redirect) and disable forms;
+- serve each file with its manifest media type, never sniffed;
+- resolve relative paths within the site only; a missing file is a missing
+  file, never a fallback to anything outside the site.
+
+A viewer that serves the site to a browser over loopback MUST put an
+unguessable token in every URL and check the `Host` header, so other pages
+and programs on the machine can't read the site through it.
+
+Fetching a site's files works like any attachment (§5.4.1). Requesting them
+reveals interest to the peers asked, as for any attachment.
+
+### 10.5 Limits
+
+| Item | Limit |
+|---|---|
+| Files per site | 64 (the attachment limit) |
+| File | the attachment limit |
+| Whole site | 32 MiB (node policy, SHOULD; phones may hold less) |

@@ -22,6 +22,7 @@ mesh-transport-file = { path = "transports/mesh-transport-file" }
 mesh-datagram = { path = "crates/mesh-datagram" }
 mesh-transport-audio = { path = "transports/mesh-transport-audio" }
 mesh-transport-ble = { path = "transports/mesh-transport-ble" }
+mesh-site = { path = "crates/mesh-site" }
 
 anyhow = "1"
 thiserror = "2"

@@ -402,12 +402,18 @@ impl Store {
         collect_entries(rows)
     }
 
-    /// Top-level objects (no parent), newest first.
+    /// Top-level posts (no parent), newest first. Other kinds (sites) have
+    /// their own views.
     pub fn roots(&self, limit: usize) -> Result<Vec<VerifiedObject>> {
         self.load_ids(
-            "SELECT id FROM objects WHERE parent IS NULL ORDER BY created_ms DESC LIMIT ?1",
+            "SELECT id FROM objects WHERE parent IS NULL AND kind = 'post' ORDER BY created_ms DESC LIMIT ?1",
             params![limit as i64],
         )
+    }
+
+    /// Every object of `kind`, newest first.
+    pub fn by_kind(&self, kind: &str) -> Result<Vec<VerifiedObject>> {
+        self.load_ids("SELECT id FROM objects WHERE kind = ?1 ORDER BY created_ms DESC", params![kind])
     }
 
     /// Everything, newest first.

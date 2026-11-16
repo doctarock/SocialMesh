@@ -1,5 +1,21 @@
 # Changelog
 
+## Unreleased
+
+- **Sites** (SPEC.md §10): folders of web pages published as objects and
+  passed around like posts. Each site has its own key, separate from your
+  identity, which is its address and lets you publish new versions; only
+  changed files travel. Ownerless sites are anonymous and can't be updated.
+  `mesh site new | publish | list | fetch | view`.
+- Safe site viewer: no scripts, nothing loaded from outside the site, no
+  redirects or connection hints, forms disabled. It serves your browser on
+  127.0.0.1 behind a random token, with a Host check. Checked in a real
+  browser: a test page's tracking image, preconnect and redirect made no
+  network request.
+- Offline bundles version 2 carry attachment and site files, not just
+  posts (`mesh export --no-files` for objects only).
+- The feed shows posts only; sites are listed with `mesh site list`.
+
 ## 0.1.0 (2026-11-16)
 
 First public release: a working proof of concept. **Experimental and not
