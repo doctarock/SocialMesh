@@ -9,8 +9,12 @@
 //! On air, each frame is:
 //!
 //! ```text
-//! preamble (16 symbols, every tone once) | length (2 symbols) | data (2 symbols per byte) | silence
+//! preamble (16 symbols, every tone once) | length, 3 times (6 symbols)
+//!   | data and 16 Reed–Solomon check bytes (2 symbols per byte) | silence
 //! ```
+//!
+//! The check bytes ([`rs`]) repair up to 8 bytes the room got wrong; the
+//! length is sent three times and voted on, nibble by nibble.
 //!
 //! The receiver finds preambles by how much of each window's energy sits on
 //! the expected tone, then reads the symbols after it. Frames are independent:
@@ -23,6 +27,13 @@
 
 use anyhow::{bail, Context, Result};
 use std::path::Path;
+
+pub mod rs;
+
+/// Largest frame the modem carries.
+pub const MAX_FRAME: usize = rs::MAX_DATA;
+/// Copies of the length byte on air.
+const LENGTH_COPIES: usize = 3;
 
 /// Modem settings. Both ends must use the same profile.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -54,7 +65,8 @@ impl Profile {
 
     /// Seconds of audio for one frame of `len` bytes.
     pub fn frame_seconds(&self, len: usize) -> f32 {
-        ((PREAMBLE.len() + 2 + 2 * len + GAP_SYMBOLS) * self.symbol_samples) as f32 / self.sample_rate as f32
+        ((PREAMBLE.len() + 2 * LENGTH_COPIES + 2 * (len + rs::PARITY) + GAP_SYMBOLS) * self.symbol_samples) as f32
+            / self.sample_rate as f32
     }
 }
 
@@ -69,15 +81,16 @@ const DETECT: f32 = 0.35;
 
 // ---------------------------------------------------------------- transmit
 
-/// Turn frames (each at most 255 bytes) into audio samples in [-1, 1].
+/// Turn frames (each at most [`MAX_FRAME`] bytes) into audio samples in [-1, 1].
 pub fn modulate(frames: &[Vec<u8>], p: &Profile) -> Result<Vec<f32>> {
     let mut out = Vec::new();
     for f in frames {
-        if f.is_empty() || f.len() > 255 {
-            bail!("frame of {} bytes; the modem carries 1–255", f.len());
+        if f.is_empty() || f.len() > MAX_FRAME {
+            bail!("frame of {} bytes; the modem carries 1–{MAX_FRAME}", f.len());
         }
         let mut symbols: Vec<u8> = PREAMBLE.to_vec();
-        for b in std::iter::once(f.len() as u8).chain(f.iter().copied()) {
+        let length = [f.len() as u8; LENGTH_COPIES];
+        for b in length.into_iter().chain(rs::encode(f)) {
             symbols.push(b >> 4);
             symbols.push(b & 0x0f);
         }
@@ -127,14 +140,33 @@ fn tone_power(x: &[f32], freq: f32, rate: u32) -> f32 {
 
 /// Most likely tone in one symbol window. The first quarter of the window is
 /// skipped: that's where the previous symbol's echo lands.
-fn read_symbol(window: &[f32], p: &Profile) -> u8 {
+fn read_symbol(window: &[f32], p: &Profile, gain: &[f32; 16]) -> u8 {
     let skip = window.len() / 4;
     let w = &window[skip..];
     (0..16u8)
-        .map(|t| (t, tone_power(w, p.tone_hz(t), p.sample_rate)))
+        .map(|t| (t, tone_power(w, p.tone_hz(t), p.sample_rate) / gain[t as usize]))
         .max_by(|a, b| a.1.total_cmp(&b.1))
         .map(|(t, _)| t)
         .unwrap_or(0)
+}
+
+/// How loud each tone arrives when sent: the mean of its loudest 1/64 of
+/// windows. Floored at 40 dB below the loudest, so a missing tone's noise
+/// isn't blown up.
+fn tone_gains(grid: &[[f32; 16]]) -> [f32; 16] {
+    let k = (grid.len() / 64).max(1);
+    let mut col = Vec::with_capacity(grid.len());
+    let mut gain: [f32; 16] = std::array::from_fn(|t| {
+        col.clear();
+        col.extend(grid.iter().map(|w| w[t]));
+        col.select_nth_unstable_by(k - 1, |a, b| b.total_cmp(a));
+        col[..k].iter().sum::<f32>() / k as f32
+    });
+    let floor = gain.iter().cloned().fold(0.0, f32::max) * 1e-4 + 1e-20;
+    for g in &mut gain {
+        *g = g.max(floor);
+    }
+    gain
 }
 
 /// Find every frame in `samples` and return its bytes. Damaged frames come
@@ -189,6 +221,20 @@ fn scan(samples: &[f32], p: &Profile) -> (Vec<Vec<u8>>, usize) {
             std::array::from_fn(|t| tone_power(w, p.tone_hz(t as u8), p.sample_rate))
         })
         .collect();
+    // Speakers, microphones and rooms are far from flat: on real phones some
+    // tones arrive 20 dB weaker than others, and the echo of a strong tone
+    // then beats a weak one. So measure how loud each tone arrives when it is
+    // sent (the mean of its loudest windows: every tone is sent in every
+    // preamble) and judge tones relative to that. An echo is weakened by the
+    // same path as the tone that caused it, so it stays below the tone sent.
+    let gain = tone_gains(&grid);
+    let mut grid = grid;
+    for powers in &mut grid {
+        for (v, g) in powers.iter_mut().zip(&gain) {
+            *v /= g;
+        }
+    }
+    let grid = grid;
     let ratio = |powers: &[f32; 16], tone: u8| -> f32 {
         let all: f32 = powers.iter().sum();
         if all < 1e-9 { 0.0 } else { powers[tone as usize] / all }
@@ -203,7 +249,8 @@ fn scan(samples: &[f32], p: &Profile) -> (Vec<Vec<u8>>, usize) {
             .enumerate()
             .map(|(i, &t)| {
                 let w = &samples[start + i * n..start + (i + 1) * n];
-                let powers: [f32; 16] = std::array::from_fn(|j| tone_power(w, p.tone_hz(j as u8), p.sample_rate));
+                let powers: [f32; 16] =
+                    std::array::from_fn(|j| tone_power(w, p.tone_hz(j as u8), p.sample_rate) / gain[j]);
                 ratio(&powers, t)
             })
             .sum::<f32>()
@@ -229,22 +276,31 @@ fn scan(samples: &[f32], p: &Profile) -> (Vec<Vec<u8>>, usize) {
             if *at + 2 * n > samples.len() {
                 return None;
             }
-            let hi = read_symbol(&samples[*at..*at + n], p);
-            let lo = read_symbol(&samples[*at + n..*at + 2 * n], p);
+            let hi = read_symbol(&samples[*at..*at + n], p, &gain);
+            let lo = read_symbol(&samples[*at + n..*at + 2 * n], p, &gain);
             *at += 2 * n;
             Some(hi << 4 | lo)
         };
-        let Some(len) = byte(&mut at) else { return (frames, start) };
-        let mut f = Vec::with_capacity(len as usize);
-        for _ in 0..len {
-            match byte(&mut at) {
-                Some(b) => f.push(b),
-                // Cut off by the end of the samples: keep it for next time.
-                None => return (frames, start),
-            }
+        let mut copies = [0u8; LENGTH_COPIES];
+        for c in &mut copies {
+            let Some(b) = byte(&mut at) else { return (frames, start) };
+            *c = b;
         }
-        let resume = if f.len() == len as usize && len > 0 {
-            frames.push(f);
+        let len = vote(copies) as usize;
+        let resume = if (1..=MAX_FRAME).contains(&len) {
+            let mut code = Vec::with_capacity(len + rs::PARITY);
+            for _ in 0..len + rs::PARITY {
+                match byte(&mut at) {
+                    Some(b) => code.push(b),
+                    // Cut off by the end of the samples: keep it for next time.
+                    None => return (frames, start),
+                }
+            }
+            // Beyond repair, it still comes back: the datagram checksum
+            // counts it as damaged.
+            let _ = rs::decode(&mut code);
+            code.truncate(len);
+            frames.push(code);
             at
         } else {
             // Garbled length or cut off: resume just after this preamble.
@@ -253,6 +309,15 @@ fn scan(samples: &[f32], p: &Profile) -> (Vec<Vec<u8>>, usize) {
         g = resume.div_ceil(step);
     }
     (frames, (g.min(last_g) * step).min(samples.len()))
+}
+
+/// Each nibble by majority over the copies of the length byte.
+fn vote(c: [u8; LENGTH_COPIES]) -> u8 {
+    let nib = |shift: u8| -> u8 {
+        let v: [u8; LENGTH_COPIES] = std::array::from_fn(|i| (c[i] >> shift) & 0x0f);
+        if v[1] == v[2] { v[1] } else { v[0] }
+    };
+    nib(4) << 4 | nib(0)
 }
 
 // ---------------------------------------------------------------- files
@@ -340,6 +405,34 @@ mod tests {
     }
 
     #[test]
+    fn length_vote_survives_one_bad_copy_per_nibble() {
+        assert_eq!(vote([0x54, 0x54, 0x54]), 0x54);
+        assert_eq!(vote([0x94, 0x54, 0x54]), 0x54);
+        assert_eq!(vote([0x54, 0x5f, 0x54]), 0x54);
+        assert_eq!(vote([0x54, 0x54, 0x14]), 0x54);
+        assert_eq!(vote([0x5f, 0x14, 0x54]), 0x54);
+    }
+
+    /// Single wrong symbols, as an echo causes, are repaired.
+    #[test]
+    fn flipped_symbols_are_repaired() {
+        let f = frames(3, 84, 15);
+        let p = Profile::FAST;
+        let mut audio = modulate(&f, &p).unwrap();
+        // Overwrite 5 data symbols in each frame with a wrong tone.
+        let per = audio.len() / f.len();
+        let n = p.symbol_samples;
+        for k in 0..f.len() {
+            for j in 0..5 {
+                let at = k * per + (PREAMBLE.len() + 2 * LENGTH_COPIES + 10 + 30 * j) * n;
+                let wrong = tones(&[(j as u8 * 5 + 3) % 16; 1], &p);
+                audio[at..at + n].copy_from_slice(&wrong);
+            }
+        }
+        assert_eq!(demodulate(&audio, &p), f);
+    }
+
+    #[test]
     fn clean_roundtrip() {
         let f = frames(3, 84, 1);
         let audio = modulate(&f, &Profile::FAST).unwrap();
@@ -363,6 +456,46 @@ mod tests {
         let rec = resample(&audio, 8000, 48000); // as a phone would record it
         let back = resample(&rec, 48000, 8000);
         assert_eq!(demodulate(&back, &Profile::FAST), f);
+    }
+
+    /// A small phone speaker into another phone's microphone, as measured on
+    /// real phones: tones around 1300–1600 Hz arrive about 22 dB weaker than
+    /// 1000 Hz, and the room adds an echo a few milliseconds later.
+    fn phone_to_phone(x: &[f32], rate: u32) -> Vec<f32> {
+        // Peaking EQ biquad (RBJ cookbook): -22 dB centred on 1450 Hz.
+        let (f0, gain_db, q) = (1450.0f32, -22.0f32, 1.4f32);
+        let a = 10f32.powf(gain_db / 40.0);
+        let w0 = std::f32::consts::TAU * f0 / rate as f32;
+        let alpha = w0.sin() / (2.0 * q);
+        let (b0, b1, b2) = (1.0 + alpha * a, -2.0 * w0.cos(), 1.0 - alpha * a);
+        let (a0, a1, a2) = (1.0 + alpha / a, -2.0 * w0.cos(), 1.0 - alpha / a);
+        let (mut x1, mut x2, mut y1, mut y2) = (0f32, 0f32, 0f32, 0f32);
+        let mut y: Vec<f32> = x
+            .iter()
+            .map(|&x0| {
+                let y0 = (b0 * x0 + b1 * x1 + b2 * x2 - a1 * y1 - a2 * y2) / a0;
+                (x2, x1, y2, y1) = (x1, x0, y1, y0);
+                y0
+            })
+            .collect();
+        // Room echo: 7 ms later, at a third of the level.
+        let d = (0.007 * rate as f32) as usize;
+        for i in (d..y.len()).rev() {
+            y[i] += 0.33 * y[i - d];
+        }
+        y
+    }
+
+    #[test]
+    fn survives_an_uneven_speaker_and_room_echo() {
+        let f = frames(6, 84, 13);
+        for p in [Profile::ROBUST, Profile::FAST] {
+            let audio = modulate(&f, &p).unwrap();
+            let rx = channel(&phone_to_phone(&audio, p.sample_rate), 20.0, 0.5, 14);
+            let got = demodulate(&rx, &p);
+            let good = f.iter().filter(|x| got.contains(x)).count();
+            assert!(good >= 5, "{p:?}: only {good}/6 frames intact");
+        }
     }
 
     #[test]
@@ -402,7 +535,7 @@ mod tests {
             let n = r.gen_range(1..6000).min(audio.len() - at);
             got.extend(d.push(&audio[at..at + n]));
             at += n;
-            let longest = Profile::ROBUST.frame_seconds(255) * 8000.0;
+            let longest = Profile::ROBUST.frame_seconds(MAX_FRAME) * 8000.0;
             assert!(d.buf.len() as f32 <= longest + 6000.0, "holding {} samples", d.buf.len());
         }
         got.extend(d.push(&vec![0.0; 8000])); // trailing silence

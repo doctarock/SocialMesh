@@ -447,12 +447,21 @@ at 8 kHz, continuous phase. Profiles: ROBUST, 160 samples per symbol
 
 ```
 preamble (16 symbols: 0 9 3 14 6 1 12 7 15 4 10 2 13 8 5 11)
-| length u8 | frame bytes (high nibble first) | 2 symbols of silence
+| length u8, 3 times | frame bytes | 16 check bytes | 2 symbols of silence
 ```
+
+Bytes go high nibble first. `length` is the frame's (1–239); receivers take
+each nibble by majority of the three copies. The check bytes are
+Reed–Solomon RS(255, 239) over GF(2^8), primitive polynomial 0x11d,
+generator roots α^0 … α^15, systematic and shortened to the frame: they
+repair up to 8 wrong bytes.
 
 Receivers find preambles by the share of in-band tone energy on the expected
 tone (noise ≈ 1/16), and read each symbol from its last three quarters (echo
-guard). Reference symbol size per frame: 64 bytes.
+guard). Speakers and rooms are not flat (phones measured up to 23 dB apart
+across the band), so receivers SHOULD judge each tone relative to how loud
+it arrives when sent, not by raw power. Reference symbol size per frame:
+64 bytes.
 
 ## 9. Bluetooth LE
 
