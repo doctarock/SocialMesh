@@ -66,6 +66,10 @@ class MainActivity : Activity() {
             text = LISTEN
             setOnClickListener { toggleListening() }
         }
+        val sites = Button(this).apply {
+            text = "Sites"
+            setOnClickListener { startActivity(Intent(this@MainActivity, SitesActivity::class.java)) }
+        }
         val sound = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             addView(play, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
@@ -84,6 +88,7 @@ class MainActivity : Activity() {
             addView(input, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
             addView(post)
             addView(sound, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
+            addView(sites, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
             addView(feed)
             addView(log)
         }

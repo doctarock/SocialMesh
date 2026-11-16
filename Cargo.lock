@@ -698,6 +698,7 @@ dependencies = [
  "mesh-discovery",
  "mesh-node",
  "mesh-object",
+ "mesh-site",
  "mesh-store",
  "mesh-transport-audio",
  "mesh-transport-ble",

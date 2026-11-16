@@ -209,3 +209,88 @@ pub extern "system" fn Java_org_socialmesh_android_Native_stopHearing(_: JNIEnv,
         m.stop_hearing();
     }
 }
+
+fn jstr(env: &mut JNIEnv, s: &JString) -> Option<String> {
+    env.get_string(s).ok().map(Into::into)
+}
+
+/// Sites held here, as JSON (see `Mobile::sites_json`).
+#[no_mangle]
+pub extern "system" fn Java_org_socialmesh_android_Native_sitesJson(mut env: JNIEnv, _: JClass, handle: jlong) -> jstring {
+    let Some(m) = mobile(handle) else { return std::ptr::null_mut() };
+    match m.sites_json() {
+        Ok(json) => string(&mut env, &json),
+        Err(e) => {
+            throw(&mut env, format!("{e:#}"));
+            std::ptr::null_mut()
+        }
+    }
+}
+
+/// Queue a site's files; returns its index path.
+#[no_mangle]
+pub extern "system" fn Java_org_socialmesh_android_Native_siteWant(
+    mut env: JNIEnv,
+    _: JClass,
+    handle: jlong,
+    address: JString,
+) -> jstring {
+    let Some(m) = mobile(handle) else { return std::ptr::null_mut() };
+    let Some(address) = jstr(&mut env, &address) else { return std::ptr::null_mut() };
+    match m.site_want(&address) {
+        Ok(index) => string(&mut env, &index),
+        Err(e) => {
+            throw(&mut env, format!("{e:#}"));
+            std::ptr::null_mut()
+        }
+    }
+}
+
+/// Files present and in total, as `have << 32 | all`, or -1.
+#[no_mangle]
+pub extern "system" fn Java_org_socialmesh_android_Native_siteProgress(
+    mut env: JNIEnv,
+    _: JClass,
+    handle: jlong,
+    address: JString,
+) -> jlong {
+    let Some(m) = mobile(handle) else { return -1 };
+    let Some(address) = jstr(&mut env, &address) else { return -1 };
+    match m.site_progress(&address) {
+        Ok((have, all)) => ((have as i64) << 32) | all as i64,
+        Err(_) => -1,
+    }
+}
+
+/// One file for the viewer, packed as
+/// `u16 status | str media_type | u16 header_count | header_count × (str name | str value) | body`
+/// with each `str` a u16 length then UTF-8. Null if the site isn't held.
+#[no_mangle]
+pub extern "system" fn Java_org_socialmesh_android_Native_siteFile(
+    mut env: JNIEnv,
+    _: JClass,
+    handle: jlong,
+    address: JString,
+    path: JString,
+) -> jbyteArray {
+    let Some(m) = mobile(handle) else { return std::ptr::null_mut() };
+    let (Some(address), Some(path)) = (jstr(&mut env, &address), jstr(&mut env, &path)) else {
+        return std::ptr::null_mut();
+    };
+    let Ok(f) = m.site_file(&address, &path) else { return std::ptr::null_mut() };
+    let mut out = Vec::with_capacity(f.data.len() + 512);
+    let put_str = |out: &mut Vec<u8>, s: &str| {
+        let b = &s.as_bytes()[..s.len().min(u16::MAX as usize)];
+        out.extend_from_slice(&(b.len() as u16).to_be_bytes());
+        out.extend_from_slice(b);
+    };
+    out.extend_from_slice(&f.status.to_be_bytes());
+    put_str(&mut out, &f.media_type);
+    out.extend_from_slice(&(f.headers.len() as u16).to_be_bytes());
+    for (k, v) in &f.headers {
+        put_str(&mut out, k);
+        put_str(&mut out, v);
+    }
+    out.extend_from_slice(&f.data);
+    env.byte_array_from_slice(&out).map(|a| a.into_raw()).unwrap_or(std::ptr::null_mut())
+}

@@ -12,6 +12,8 @@ sync posts, with no accounts, no internet and no setup.
 - `app/.../MeshService.kt`: keeps the node running in the background, with
   a notification showing the number of links and a Stop button.
 - `app/.../Sound.kt`: speaker and microphone for posts by sound.
+- `app/.../SitesActivity.kt`, `SiteActivity.kt`: the list of sites and the
+  safe viewer.
 - `app/.../MainActivity.kt`: post, feed, play/listen, and a log of what the
   radio does.
 
@@ -70,6 +72,16 @@ On one phone tap **Play newest post**; on another, nearby, tap **Listen**
 warbling tones; the listener shows `Hearing a post by sound…`, then
 `New post by sound`. Anyone in earshot can hear it, so only public posts
 are played. Turn the volume up; a quiet room helps.
+
+## Sites
+
+**Sites** lists the web pages this phone holds (SPEC.md §10); they arrive
+from nearby phones and computers like posts do. Opening one shows it with
+scripts off and nothing loaded from the network: every request is answered
+by the app from the site's own files, Google Safe Browsing lookups and
+WebView metrics are off, and a link to an outside website opens only after
+you confirm, in your own browser. Publishing sites from the phone comes
+later; use `mesh site publish` on a computer.
 
 ## Known limits
 

@@ -22,6 +22,7 @@ mesh-transport-ble.workspace = true
 mesh-transport-file.workspace = true
 mesh-transport-audio.workspace = true
 mesh-datagram.workspace = true
+mesh-site.workspace = true
 tokio.workspace = true
 anyhow.workspace = true
 hex.workspace = true

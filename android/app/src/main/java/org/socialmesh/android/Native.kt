@@ -46,4 +46,16 @@ object Native {
 
     /** Forget partly heard sound. */
     @JvmStatic external fun stopHearing(handle: Long)
+
+    /** Sites held here: JSON array of {address, short, title, version, files, have, size, ownerless}. */
+    @JvmStatic external fun sitesJson(handle: Long): String?
+
+    /** Queue a site's files for download. Returns its first page's path. Throws if the site isn't held. */
+    @JvmStatic external fun siteWant(handle: Long, address: String): String?
+
+    /** Files present and in total, as `have shl 32 or all`, or -1. */
+    @JvmStatic external fun siteProgress(handle: Long, address: String): Long
+
+    /** One file for the viewer, packed (see SiteActivity.unpack), or null. */
+    @JvmStatic external fun siteFile(handle: Long, address: String, path: String): ByteArray?
 }

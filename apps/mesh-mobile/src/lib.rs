@@ -24,7 +24,10 @@ use std::time::Duration;
 use tokio::sync::{broadcast, mpsc};
 
 pub mod jni;
+mod site;
 mod sound;
+
+pub use site::ViewFile;
 
 #[derive(Clone, Copy, Debug)]
 pub struct Options {
@@ -179,7 +182,11 @@ fn describe(ev: &NodeEvent) -> Option<String> {
     Some(match ev {
         NodeEvent::PeerConnected { peer, medium, .. } => format!("Connected {} over {medium}", peer.short()),
         NodeEvent::PeerDisconnected { peer, medium, .. } => format!("Disconnected {} over {medium}", peer.short()),
-        NodeEvent::ObjectReceived { object, .. } => format!("New post {}", object.id().short()),
+        NodeEvent::ObjectReceived { object, .. } => match mesh_object::site::SiteManifest::of(object.object()) {
+            Some(Ok(m)) => format!("New site \"{}\"", m.title),
+            Some(Err(_)) => return None,
+            None => format!("New post {}", object.id().short()),
+        },
         NodeEvent::Discovered { medium, .. } => format!("Found a node via {medium}"),
         NodeEvent::LinkKeyRotated { id } => format!("New link key {}", id.short()),
         NodeEvent::Listening(a) => format!("Listening on {a}"),

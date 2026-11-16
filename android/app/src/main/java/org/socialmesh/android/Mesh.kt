@@ -110,6 +110,19 @@ object Mesh {
         call { Native.stopHearing(it) }
     }
 
+    fun sitesJson(): String? = call { Native.sitesJson(it) }
+
+    fun siteWant(address: String): String? = call { Native.siteWant(it, address) }
+
+    /** (files here, files in total), or null. */
+    fun siteProgress(address: String): Pair<Int, Int>? {
+        val v = call { Native.siteProgress(it, address) } ?: return null
+        if (v < 0) return null
+        return (v ushr 32).toInt() to (v and 0xffffffffL).toInt()
+    }
+
+    fun siteFile(address: String, path: String): ByteArray? = call { Native.siteFile(it, address, path) }
+
     /** The latest lines, oldest first. */
     fun recentLines(): List<String> = synchronized(recent) { recent.toList() }
 

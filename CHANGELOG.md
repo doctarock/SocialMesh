@@ -15,6 +15,11 @@
 - Offline bundles version 2 carry attachment and site files, not just
   posts (`mesh export --no-files` for objects only).
 - The feed shows posts only; sites are listed with `mesh site list`.
+- Android: a **Sites** screen and viewer. Every request is answered by the
+  app from the site's files, with scripts, network loads, Safe Browsing
+  lookups and WebView metrics off, and outside links opened only after a
+  prompt. Tested on a phone: a site and its update arrived over Wi-Fi from a
+  computer, and a tracking image was blocked before any request was made.
 
 ## 0.1.0 (2026-11-16)
 
