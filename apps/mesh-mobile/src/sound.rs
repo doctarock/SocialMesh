@@ -7,7 +7,7 @@
 //! private route would give away this device as its source.
 
 use crate::Mobile;
-use anyhow::{bail, Context, Result};
+use anyhow::{bail, Result};
 use mesh_datagram::{Receiver, Sender};
 use mesh_transport_audio::{modulate, resample, Demodulator, Profile};
 
@@ -57,13 +57,16 @@ impl Mobile {
     pub fn sound_of_newest(&self, fast: bool) -> Result<Vec<u8>> {
         let profile = if fast { Profile::FAST } else { Profile::ROBUST };
         let obj = self.node.with_store(|s| -> Result<_> {
-            let ids = s.shareable_ids(true)?;
-            let Some(id) = ids.last() else { bail!("nothing public to play yet") };
-            // Embargoed (still on the private route) or otherwise unshareable: never broadcast.
-            if !s.shareable(id, true)? {
-                bail!("{} isn't public yet", id.short());
+            // The newest public *post*: sites and other kinds need their files,
+            // which sound is far too slow to carry.
+            for id in s.shareable_ids(true)?.iter().rev() {
+                let Some(o) = s.get(id)? else { continue };
+                // Embargoed (still on the private route) or otherwise unshareable: never broadcast.
+                if o.object().kind == mesh_object::KIND_POST && s.shareable(id, true)? {
+                    return Ok(o);
+                }
             }
-            s.get(id)?.context("post not stored here")
+            bail!("no public post to play yet")
         })?;
         let payload = mesh_transport_file::bundle(&[obj]);
         let mut tx = Sender::new(&payload, SYMBOL)?;

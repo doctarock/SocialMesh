@@ -1,6 +1,10 @@
 # Changelog
 
-## Unreleased
+## 0.2.0 (2026-11-17)
+
+Sites: web pages passed around like posts, published and viewed on computers
+and phones. Still an **experimental proof of concept, not independently
+security-reviewed**.
 
 - **Sites** (SPEC.md §10): folders of web pages published as objects and
   passed around like posts. Each site has its own key, separate from your
@@ -15,6 +19,8 @@
 - Offline bundles version 2 carry attachment and site files, not just
   posts (`mesh export --no-files` for objects only).
 - The feed shows posts only; sites are listed with `mesh site list`.
+- Sound (`mesh audio send`, the app's Play) sends posts only, never a newer
+  site, whose files sound is far too slow to carry.
 - Android: a **Sites** screen and viewer. Every request is answered by the
   app from the site's files, with scripts, network loads, Safe Browsing
   lookups and WebView metrics off, and outside links opened only after a

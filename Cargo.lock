@@ -634,7 +634,7 @@ checksum = "cf8baf1c55e62ffcace7a9f06f4bd9cd3f0c4beb022d3b367256b91b87513d98"
 
 [[package]]
 name = "mesh-cli"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -656,7 +656,7 @@ dependencies = [
 
 [[package]]
 name = "mesh-crypto"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "blake3",
  "ed25519-dalek",
@@ -667,7 +667,7 @@ dependencies = [
 
 [[package]]
 name = "mesh-datagram"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "blake3",
  "rand",
@@ -677,7 +677,7 @@ dependencies = [
 
 [[package]]
 name = "mesh-discovery"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "mesh-crypto",
  "mesh-transport",
@@ -688,7 +688,7 @@ dependencies = [
 
 [[package]]
 name = "mesh-mobile"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "hex",
@@ -710,7 +710,7 @@ dependencies = [
 
 [[package]]
 name = "mesh-node"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "mesh-crypto",
@@ -728,7 +728,7 @@ dependencies = [
 
 [[package]]
 name = "mesh-object"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "chacha20poly1305",
  "mesh-crypto",
@@ -737,7 +737,7 @@ dependencies = [
 
 [[package]]
 name = "mesh-protocol"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "mesh-crypto",
  "mesh-object",
@@ -748,7 +748,7 @@ dependencies = [
 
 [[package]]
 name = "mesh-site"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "mesh-crypto",
@@ -759,7 +759,7 @@ dependencies = [
 
 [[package]]
 name = "mesh-store"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "mesh-crypto",
  "mesh-object",
@@ -770,14 +770,14 @@ dependencies = [
 
 [[package]]
 name = "mesh-transport"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "tokio",
 ]
 
 [[package]]
 name = "mesh-transport-audio"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "hound",
@@ -787,7 +787,7 @@ dependencies = [
 
 [[package]]
 name = "mesh-transport-ble"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "hex",
  "mesh-crypto",
@@ -803,7 +803,7 @@ dependencies = [
 
 [[package]]
 name = "mesh-transport-file"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "mesh-crypto",
@@ -814,7 +814,7 @@ dependencies = [
 
 [[package]]
 name = "mesh-transport-tcp"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "mesh-transport",
  "tokio",

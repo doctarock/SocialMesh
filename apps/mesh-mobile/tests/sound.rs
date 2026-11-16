@@ -33,6 +33,9 @@ fn a_post_crosses_from_speaker_to_microphone() {
 
     assert!(a.sound_of_newest(true).is_err(), "nothing to play yet");
     let id = a.publish("heard, not seen").unwrap();
+    // A site published afterwards is newer, but sound carries posts only.
+    let site = vec![("index.html".to_string(), b"<h1>hi</h1>".to_vec())];
+    a.publish_site(socialmesh::SiteTarget::New, "Newer site", "index.html", site, false).unwrap();
     let pcm = a.sound_of_newest(true).unwrap();
 
     let mut lines = Vec::new();

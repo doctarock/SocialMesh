@@ -469,8 +469,19 @@ fn audio(home: &Path, cmd: AudioCmd) -> Result<()> {
         AudioCmd::Send { out, ids, latest, fast, extra } => {
             let profile = if fast { Profile::FAST } else { Profile::ROBUST };
             let ids: Vec<Digest> = if ids.is_empty() {
-                let all = store.shareable_ids(true)?;
-                all[all.len().saturating_sub(latest)..].to_vec()
+                // Posts only: sites and other kinds need their files, which
+                // sound is far too slow to carry.
+                let mut posts = Vec::new();
+                for id in store.shareable_ids(true)?.iter().rev() {
+                    if posts.len() == latest {
+                        break;
+                    }
+                    if store.get(id)?.is_some_and(|o| o.object().kind == mesh_object::KIND_POST) {
+                        posts.push(*id);
+                    }
+                }
+                posts.reverse();
+                posts
             } else {
                 ids.iter().map(|i| store.resolve(i)).collect::<Result<_, _>>()?
             };
