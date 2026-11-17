@@ -1,5 +1,21 @@
 # Changelog
 
+## Unreleased
+
+- **Apps** (SPEC.md §11): sites with code (polls, petitions, sign-ups).
+  App code runs in a web worker with no network at all: the page runs
+  only SocialMesh's host script, so WebRTC (which a content security
+  policy can't block) is out of reach. People's answers are entries,
+  public replies to the app, signed by default with a key unique to them
+  and the app, sent by the private route. Every send is confirmed first.
+  `mesh site publish --app <script>`, `mesh site entries`; the desktop
+  viewer asks in the terminal. Example: `examples/poll`.
+- **Security fix:** a site's `<iframe>` made the browser look up the
+  frame's address in DNS before its policy refused the frame, telling a
+  site author when someone opened the page. Frames and embedded objects
+  are now neutralised. Checked against 38 ways HTML can reach out: none
+  now touches the network.
+
 ## 0.2.0 (2026-11-17)
 
 Sites: web pages passed around like posts, published and viewed on computers

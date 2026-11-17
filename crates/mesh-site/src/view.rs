@@ -50,11 +50,22 @@ pub fn is_html(media_type: &str) -> bool {
 /// Browsers match them case-insensitively in ASCII, with no escapes, so
 /// replacing every occurrence anywhere in the bytes leaves no way to write
 /// one. (Ordinary text that mentions them changes too; that is the price.)
-const NEUTRALISE: [(&[u8], &[u8]); 4] = [
+///
+/// Frames and embedded objects are renamed to unknown elements: a browser
+/// preconnects (a real DNS lookup) to an `<iframe>`'s address before its
+/// policy refuses the frame, and a tag name must follow `<` directly, so
+/// these spellings are the only ones.
+const NEUTRALISE: [(&[u8], &[u8]); 10] = [
     (b"http-equiv", b"data-equiv"),
     (b"preconnect", b"xreconnect"),
     (b"dns-prefetch", b"dns-xrefetch"),
     (b"prerender", b"xrerender"),
+    (b"<iframe", b"<xframe"),
+    (b"<frame", b"<xrame"),
+    (b"<object", b"<xbject"),
+    (b"<embed", b"<xmbed"),
+    (b"<portal", b"<xortal"),
+    (b"<fencedframe", b"<xencedframe"),
 ];
 
 /// Make site HTML unable to redirect itself or contact anything.
@@ -95,6 +106,11 @@ mod tests {
             r#"<link rel="DNS-Prefetch" href="//t.example">"#,
             r#"<link rel=prerender href=https://t.example>"#,
             r#"<link rel="stylesheet preconnect" href="https://t.example">"#,
+            r#"<iframe src="https://t.example/frame"></iframe>"#,
+            r#"<IFRAME SRC=//t.example>"#,
+            r#"<frameset><frame src="https://t.example/f"></frameset>"#,
+            r#"<object data="https://t.example/o"></object><EMBED src=//t.example>"#,
+            r#"<portal src="https://t.example"></portal><fencedframe></fencedframe>"#,
         ];
         for a in attacks {
             let out = clean(a).to_ascii_lowercase();

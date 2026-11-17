@@ -205,8 +205,31 @@ forms. What that protects against, and what it doesn't:
 - **Content.** A site can say anything: impersonate a party, link to malware
   or lie. The address (its key) is the only proof of who controls a site;
   titles prove nothing.
-- **Apps (scripts) are not supported.** Running code from strangers needs its
-  own sandbox and threat model first.
+### Apps (SPEC.md §11)
+
+Apps run code written by anyone. The design goal is that an app can't learn
+who or where you are unless you send it something, and then only what you
+saw and agreed to.
+
+- **No network, including WebRTC.** A content security policy can't stop
+  WebRTC, which can reach an outside server (and so learn your IP address)
+  from any page script. So app code never runs in the page: it runs in a
+  web worker, which has no WebRTC, and every way a worker could connect
+  (fetch, WebSocket, imports, nested workers) is blocked by the worker's
+  policy. The page runs only SocialMesh's own host script.
+- **What an app can read:** its own files and the public entries people have
+  sent to it. Not your posts, identity, other sites, contacts or files.
+- **What an app can send:** an entry, only after a prompt that shows the exact
+  data and who it will be signed as. By default that is a key unique to the
+  app, which links your answers to one app to each other but to nothing else.
+  Entries are public to everyone holding the app; don't put anything in one
+  you wouldn't post.
+- **What a hostile app can still do:** show misleading text, including a
+  `summary` that misdescribes the data (the prompt also shows the data itself);
+  try to talk you into signing with your real identity; use CPU and battery
+  while open; count fake entries (anyone can make many keys); or render a
+  link to an outside website that you then click.
+- **Local storage** is per app and per device, never sent anywhere.
 
 ## Known gaps to close before public use
 

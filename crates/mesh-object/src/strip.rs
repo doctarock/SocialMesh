@@ -34,7 +34,7 @@ pub fn strip_metadata(media_type: &str, data: &[u8]) -> Result<Strip, String> {
         // Text the author can read in full, and fonts (designer credits, not
         // personal data). SVG is not here: editors embed creator names and
         // local file paths in it.
-        "text/plain" | "text/markdown" | "text/csv" | "application/json" | "text/html" | "text/css" | "font/woff"
+        "text/plain" | "text/markdown" | "text/csv" | "application/json" | "text/html" | "text/css" | "text/javascript" | "font/woff"
         | "font/woff2" | "font/ttf" | "font/otf" => return Ok(Strip::NothingToStrip),
         _ => return Ok(Strip::Unsupported),
     };

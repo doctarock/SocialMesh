@@ -15,6 +15,7 @@ use mesh_store::{BlobSource, Store, WantedAttachment};
 use std::collections::HashMap;
 use std::fmt;
 
+pub mod app;
 pub mod serve;
 pub mod view;
 
@@ -151,6 +152,20 @@ pub fn build(
     previous: Option<&Site>,
     source: BlobSource,
 ) -> Result<Content> {
+    build_app(store, files, title, index, None, previous, source)
+}
+
+/// [`build`] for an app: `app` names its script (SPEC.md §11.1), or `None`
+/// for a plain site.
+pub fn build_app(
+    store: &Store,
+    files: Vec<NewFile>,
+    title: &str,
+    index: &str,
+    app: Option<&str>,
+    previous: Option<&Site>,
+    source: BlobSource,
+) -> Result<Content> {
     if files.is_empty() {
         bail!("a site needs at least one file");
     }
@@ -199,6 +214,7 @@ pub fn build(
         version: previous.map_or(1, |p| p.manifest.version + 1),
         title: title.trim().to_string(),
         index: index.to_string(),
+        app: app.map(str::to_string),
         files: listed,
     };
     manifest.check(attachments.len()).map_err(|e| anyhow::anyhow!("{}", e.0))?;

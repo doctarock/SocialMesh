@@ -1,7 +1,7 @@
 //! `mesh site …`: publish a folder as a site, list and fetch sites, view one
 //! in a browser through the safe local viewer (SPEC.md §10).
 
-use super::{clean_metadata, coarsen, human_size, read_secret, save_direct, save_private, write_secret};
+use super::{clean_metadata, coarsen, human_size, load_anon_secret, load_identity, read_secret, save_direct, save_private, write_secret};
 use anyhow::{bail, Context, Result};
 use clap::Subcommand;
 use mesh_crypto::Keypair;
@@ -43,7 +43,13 @@ pub enum SiteCmd {
         /// Publish files whose metadata can't be removed (e.g. SVG) as they are.
         #[arg(long)]
         keep_metadata: bool,
+        /// Make the site an app: this script (one of its files) runs in a
+        /// sandbox with no network. Kept from the previous version if not given.
+        #[arg(long, value_name = "SCRIPT")]
+        app: Option<String>,
     },
+    /// What people have sent an app (its entries), oldest first.
+    Entries { site: String },
     /// Sites this node holds (newest version of each).
     List,
     /// Queue a site's files for download; a running `mesh run` fetches them.
@@ -95,7 +101,7 @@ pub fn run(home: &Path, cmd: SiteCmd) -> Result<()> {
             eprintln!("note: anyone holding {} can publish versions of this site. Back it up; keep it private.", path.display());
             Ok(())
         }
-        SiteCmd::Publish { dir, key, ownerless, title, index, private_route, keep_metadata } => {
+        SiteCmd::Publish { dir, key, ownerless, title, index, private_route, keep_metadata, app } => {
             let store = Store::open(home)?;
             let site_key = match &key {
                 Some(name) => {
@@ -127,7 +133,8 @@ pub fn run(home: &Path, cmd: SiteCmd) -> Result<()> {
                 );
             }
             let source = if private { BlobSource::Cache } else { BlobSource::Own };
-            let content = mesh_site::build(&store, files, &title, &index, previous.as_ref(), source)?;
+            let app = app.or_else(|| previous.as_ref().and_then(|p| p.manifest.app.clone()));
+            let content = mesh_site::build_app(&store, files, &title, &index, app.as_deref(), previous.as_ref(), source)?;
             let reused = mesh_site::reused(&content, previous.as_ref());
             let n = content.attachments.len();
             let obj = match &site_key {
@@ -180,6 +187,26 @@ pub fn run(home: &Path, cmd: SiteCmd) -> Result<()> {
             }
             Ok(())
         }
+        SiteCmd::Entries { site } => {
+            let store = Store::open(home)?;
+            let s = mesh_site::find(&store, &site)?;
+            if s.manifest.app.is_none() {
+                bail!("\"{}\" is a site, not an app", s.manifest.title);
+            }
+            let host = TerminalHost::new(home)?;
+            let mine = mesh_site::serve::AppHost::mine(&host, &s);
+            let entries = mesh_site::app::entries(&store, &s)?;
+            println!("\"{}\": {} entries", s.manifest.title, entries.len());
+            for e in entries {
+                let who = match e.author {
+                    Some(a) if mine.contains(&a) => format!("{} (you)", a.short()),
+                    Some(a) => a.short(),
+                    None => "ownerless".into(),
+                };
+                println!("  {}  {who}  {}", e.id.short(), e.data);
+            }
+            Ok(())
+        }
         SiteCmd::Fetch { site } => {
             let store = Store::open(home)?;
             let s = mesh_site::find(&store, &site)?;
@@ -195,15 +222,81 @@ pub fn run(home: &Path, cmd: SiteCmd) -> Result<()> {
             mesh_site::want(&store, &s)?;
             let (have, all) = s.downloaded(&store)?;
             drop(store);
-            let server = mesh_site::serve::Server::bind(home.to_path_buf(), s.address, port)?;
+            let mut server = mesh_site::serve::Server::bind(home.to_path_buf(), s.address, port)?;
             println!("\"{}\" (version {}, {have}/{all} files here)", s.manifest.title, s.manifest.version);
             println!("Open in your browser:\n  {}", server.url());
-            println!("Scripts don't run and nothing loads from outside the site. Links to other websites");
-            println!("still leave SocialMesh if you click them. Press Ctrl+C to stop.");
+            if s.manifest.app.is_some() {
+                server = server.with_app_host(std::sync::Arc::new(TerminalHost::new(home)?));
+                println!("This is an app: its code runs in a sandbox with no network. When it asks to send");
+                println!("something, you'll be asked here first. Press Ctrl+C to stop.");
+            } else {
+                println!("Scripts don't run and nothing loads from outside the site. Links to other websites");
+                println!("still leave SocialMesh if you click them. Press Ctrl+C to stop.");
+            }
             if have < all {
                 eprintln!("note: some files are still downloading; keep `mesh run` running and refresh.");
             }
             server.run()
+        }
+    }
+}
+
+/// Answers an app's requests for `mesh site view`: asks on the terminal
+/// before publishing anything.
+struct TerminalHost {
+    identity: Keypair,
+    anonymous: [u8; 32],
+    asking: std::sync::Mutex<()>,
+}
+
+impl TerminalHost {
+    fn new(home: &Path) -> Result<TerminalHost> {
+        Ok(TerminalHost { identity: load_identity(home)?, anonymous: load_anon_secret(home)?, asking: Default::default() })
+    }
+}
+
+impl mesh_site::serve::AppHost for TerminalHost {
+    fn mine(&self, site: &mesh_site::Site) -> Vec<mesh_crypto::Digest> {
+        vec![mesh_site::app::app_key(&self.anonymous, &site.address).public().id(), self.identity.public().id()]
+    }
+
+    fn submit(&self, store: &Store, site: &mesh_site::Site, data: &str, summary: &str) -> Result<mesh_crypto::Digest> {
+        use std::io::Write as _;
+        let _one_at_a_time = self.asking.lock().unwrap();
+        let content = mesh_site::app::entry_content(site, data)?;
+        let app_key = mesh_site::app::app_key(&self.anonymous, &site.address);
+        println!();
+        println!("App \"{}\" ({}) wants to send an entry.", site.manifest.title, site.address.short());
+        if !summary.is_empty() {
+            println!("  It says:  {summary}");
+        }
+        println!("  Data:     {data}");
+        println!("Entries are public to everyone who has the app.");
+        print!(
+            "Send it [a]nonymously for this app (as {}), [s]igned as you ({}), or [n]ot? [a/s/N] ",
+            app_key.public().id().short(),
+            self.identity.public().id().short()
+        );
+        std::io::stdout().flush()?;
+        let mut answer = String::new();
+        std::io::stdin().read_line(&mut answer)?;
+        match answer.trim().to_ascii_lowercase().as_str() {
+            "a" => {
+                let obj = create(coarsen(content), Author::Signed(&app_key))?;
+                store.put_stem(&obj, true)?;
+                println!("Sent anonymously ({}); it goes public from a relay a few hops away.", obj.id().short());
+                Ok(obj.id())
+            }
+            "s" => {
+                let obj = create(content, Author::Signed(&self.identity))?;
+                store.put(&obj, &mesh_store::Origin::Local)?;
+                println!("Sent, signed as you ({}).", obj.id().short());
+                Ok(obj.id())
+            }
+            _ => {
+                println!("Not sent.");
+                bail!("declined")
+            }
         }
     }
 }

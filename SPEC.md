@@ -570,6 +570,7 @@ socialmesh-site 1
 version <u64>
 title <text>
 index <path>
+[app <path>]
 file <attachment index> <path>
 …
 ```
@@ -578,6 +579,7 @@ file <attachment index> <path>
   the author published. Ownerless sites use `1`.
 - `title`: 1–200 characters to the end of the line, no control characters.
 - `index`: the page shown first; MUST be one of the files.
+- An optional `app <path>` line after `index` makes the site an app (§11).
 - `file` lines: one per attachment, in ascending byte order of `path`. Every
   attachment is listed exactly once.
 - A `path` is 1–255 bytes of segments joined by `/`. Each segment is 1 or
@@ -610,6 +612,9 @@ Sites are untrusted. A viewer MUST:
   links to elsewhere are followed only when the user clicks one, and SHOULD
   be confirmed first;
 - ignore `<meta http-equiv>` (refresh can't redirect) and disable forms;
+- create no frames or embedded objects from site HTML (`iframe`, `frame`,
+  `object`, `embed`, `portal`, `fencedframe`): browsers preconnect to a
+  frame's address, a real DNS lookup, before their policy refuses it;
 - serve each file with its manifest media type, never sniffed;
 - resolve relative paths within the site only; a missing file is a missing
   file, never a fallback to anything outside the site.
@@ -628,3 +633,75 @@ reveals interest to the peers asked, as for any attachment.
 | Files per site | 64 (the attachment limit) |
 | File | the attachment limit |
 | Whole site | 32 MiB (node policy, SHOULD; phones may hold less) |
+
+## 11. Apps
+
+An app is a site (§10) with code: polls, petitions, sign-ups, surveys. Its
+code runs with no network access of any kind, and everything people send
+it is an ordinary object, passed around like posts.
+
+### 11.1 App manifest
+
+A site manifest becomes an app with one more line, after `index`:
+
+```
+app <path>
+```
+
+`<path>` is one of the site's files, ending in `.js`: the app's script.
+A viewer that doesn't support apps MUST treat the object as an invalid
+site (§10.2), not show it as a static one.
+
+### 11.2 Where app code runs
+
+App code MUST run where it can reach nothing outside the viewer:
+
+- In a browser engine, the app's script runs in a **dedicated worker**
+  started by the viewer, never in the page. A page realm exposes APIs a
+  content security policy doesn't govern (WebRTC); a worker has none.
+- The page runs only the viewer's own host script. Its policy allows that
+  one script (by nonce) and nothing else: the site's `<script>` elements,
+  event-handler attributes and `javascript:` URLs never run.
+- The worker's policy allows scripts from the site only (`importScripts`)
+  and no connections, workers or other fetches (`default-src 'none';
+  script-src 'self'`). WebAssembly and `eval` stay off.
+
+The app draws by sending HTML to the host, which inserts it after the same
+neutralising as site pages (§10.4). The host forwards `click`, `submit`
+and `change` events (the nearest `data-action`, and form values) to the
+worker.
+
+### 11.3 What an app may do
+
+| Request | What the viewer does |
+|---|---|
+| `render(html)` | Shows `html` in the app's area. |
+| `entries()` | Returns every entry (§11.4) for this app held here. |
+| `submit(data, summary)` | Asks the person, showing the app, the summary and the exact `data`, and who it will be published as. Publishes only on yes. |
+| `storage` | A small key-value store for this app on this device, never shared. |
+
+There is nothing else: no reading other sites, posts, identities, files or
+the network.
+
+### 11.4 Entries
+
+What people send an app is an **entry**: an object (§3) with
+
+- `kind` = `app.entry`;
+- `parent` = the ID of the app version they used;
+- `body_type` = `application/json`, `body` = the app's `data`, at most
+  16 384 bytes of UTF-8 (the app defines the format);
+- no attachments.
+
+An app's entries are the entries whose parent is any version of it. Every
+entry is public: anyone holding the app can read it.
+
+By default an entry is signed by the person's **per-app anonymous key**,
+the thread-scoped key of §1.4 with the app's address digest as
+`root_thread_id`. The same person signs every entry to one app with the
+same key (so an app can count one answer each), and nothing links that key
+to their identity or to other apps. Anonymous entries take the private
+route (§5.5) with coarse times, like anonymous posts. A person may choose
+to sign with their posting identity instead.
+
+Counts are advisory: anyone can make many keys.
