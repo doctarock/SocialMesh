@@ -364,3 +364,64 @@ pub extern "system" fn Java_org_socialmesh_android_Native_publishSite(
         }
     }
 }
+
+/// A string result, or a thrown RuntimeException.
+fn string_or_throw(env: &mut JNIEnv, r: anyhow::Result<String>) -> jstring {
+    match r {
+        Ok(s) => string(env, &s),
+        Err(e) => {
+            throw(env, format!("{e:#}"));
+            std::ptr::null_mut()
+        }
+    }
+}
+
+/// `{"title","address","version"}` for an app's code.
+#[no_mangle]
+pub extern "system" fn Java_org_socialmesh_android_Native_appInfo(mut env: JNIEnv, _: JClass, handle: jlong, address: JString) -> jstring {
+    let Some(m) = mobile(handle) else { return std::ptr::null_mut() };
+    let Some(address) = jstr(&mut env, &address) else { return std::ptr::null_mut() };
+    let r = m.app_info(&address);
+    string_or_throw(&mut env, r)
+}
+
+/// Entries to an app, as JSON.
+#[no_mangle]
+pub extern "system" fn Java_org_socialmesh_android_Native_appEntries(mut env: JNIEnv, _: JClass, handle: jlong, address: JString) -> jstring {
+    let Some(m) = mobile(handle) else { return std::ptr::null_mut() };
+    let Some(address) = jstr(&mut env, &address) else { return std::ptr::null_mut() };
+    let r = m.app_entries(&address);
+    string_or_throw(&mut env, r)
+}
+
+/// The short ID anonymous entries to this app are signed with.
+#[no_mangle]
+pub extern "system" fn Java_org_socialmesh_android_Native_appAnonymousId(
+    mut env: JNIEnv,
+    _: JClass,
+    handle: jlong,
+    address: JString,
+) -> jstring {
+    let Some(m) = mobile(handle) else { return std::ptr::null_mut() };
+    let Some(address) = jstr(&mut env, &address) else { return std::ptr::null_mut() };
+    let r = m.app_anonymous_id(&address);
+    string_or_throw(&mut env, r)
+}
+
+/// Publish an entry the person agreed to. Returns its ID (hex).
+#[no_mangle]
+pub extern "system" fn Java_org_socialmesh_android_Native_appSubmit(
+    mut env: JNIEnv,
+    _: JClass,
+    handle: jlong,
+    address: JString,
+    data: JString,
+    anonymous: jboolean,
+) -> jstring {
+    let Some(m) = mobile(handle) else { return std::ptr::null_mut() };
+    let (Some(address), Some(data)) = (jstr(&mut env, &address), jstr(&mut env, &data)) else {
+        return std::ptr::null_mut();
+    };
+    let r = m.app_submit(&address, &data, anonymous != JNI_FALSE);
+    string_or_throw(&mut env, r)
+}

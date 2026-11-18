@@ -59,6 +59,18 @@ object Native {
     /** One file for the viewer, packed (see SiteActivity.unpack), or null. */
     @JvmStatic external fun siteFile(handle: Long, address: String, path: String): ByteArray?
 
+    /** `{title, address, version}` for an app's code. */
+    @JvmStatic external fun appInfo(handle: Long, address: String): String?
+
+    /** Entries sent to an app, as its code sees them (JSON array). */
+    @JvmStatic external fun appEntries(handle: Long, address: String): String?
+
+    /** The short ID this person's anonymous entries to an app are signed with. */
+    @JvmStatic external fun appAnonymousId(handle: Long, address: String): String?
+
+    /** Publish an entry the person agreed to (anonymously for this app, or signed as them). Returns its ID. */
+    @JvmStatic external fun appSubmit(handle: Long, address: String, data: String, anonymous: Boolean): String?
+
     /** This device's site keys: JSON array of {key, address, short, title, version}. */
     @JvmStatic external fun mySitesJson(handle: Long): String?
 

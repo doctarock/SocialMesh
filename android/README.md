@@ -89,6 +89,14 @@ Photos lose their hidden location and camera details on the way out; files
 whose details can't be removed (SVG, PDF) are published only if you agree.
 Site keys are stored like the command line's (`sites/<name>.key`).
 
+**Apps** (sites marked "· app", SPEC.md §11) open in the same viewer, with
+each site on its own origin. The page runs only SocialMesh's host script; the
+app's code runs in a worker with no network. When an app wants to send
+something (a vote, a signature), the phone shows exactly what will be sent
+and asks: anonymously (signed by a key used only for that app, sent by the
+private route), as you, or not at all. Apps can't yet be published from the
+phone; use `mesh site publish --app`.
+
 ## Known limits
 
 - Android rotates the Bluetooth address itself, on its own schedule (about
