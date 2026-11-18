@@ -58,7 +58,10 @@ The emulator has no Bluetooth radio; use real phones.
 ## What to expect
 
 - Grant the Bluetooth permissions when asked. Android 10/11 calls it
-  location permission; the app never reads your location.
+  location permission; the app never reads your location. Nothing is
+  required: SocialMesh starts with whatever is available (Bluetooth, Wi-Fi,
+  hosts, sound) and picks Bluetooth up when it's turned on. The status card
+  says which are on; tap it to turn Bluetooth on.
 - Within a few seconds of both apps being open and in range, the log shows
   `Found a node via bluetooth` and `Connected … over ble`.
 - Post on one phone; it appears on the other.
@@ -67,11 +70,35 @@ The emulator has no Bluetooth radio; use real phones.
 
 ## Posts by sound
 
-On one phone tap **Play newest post**; on another, nearby, tap **Listen**
-(it asks for the microphone). A short post takes about 30 seconds of
-warbling tones; the listener shows `Hearing a post by sound…`, then
-`New post by sound`. Anyone in earshot can hear it, so only public posts
-are played. Turn the volume up; a quiet room helps.
+On one phone tap **Play**; on another, nearby, tap **Listen** (it asks for
+the microphone). A short post takes about 30 seconds of warbling tones; the
+listener shows `Hearing a post by sound…`, then `New post by sound`. Anyone
+in earshot can hear it, so only public posts are played. Turn the media
+volume up (a tablet's speaker at low volume isn't heard a step away); a
+quiet room helps.
+
+**Sound modem.** With no Bluetooth and no Wi-Fi, the phone switches to
+sound by itself (once the microphone is allowed): it listens all the time,
+with the screen off too, and every minute or so plays one of its five
+newest public posts, taking turns. Before playing it listens, waits a
+random moment and listens again, and it holds off while it hears modem
+tones from anyone else, even ones too faint to decode. It doesn't hear
+itself. **Modem** switches it either way by hand; that holds until
+Bluetooth or Wi-Fi changes. The app warns when the media volume is low but
+never changes it.
+
+## Hosts
+
+**Hosts** is for nodes reached by address rather than found by radio: a
+computer running `mesh run`, or a relay someone shares. Type an address
+(`192.168.1.20`, `relay.example.org:7842`) or paste a `mesh1:` invitation.
+The phone tries it, remembers the node that answered (a different one at
+that address later is refused; an invitation naming another node is
+refused at once), and keeps reconnecting over any network, mobile data
+included. Nodes announcing themselves on the same Wi-Fi are listed too, and
+linked with by themselves; tap one to keep it for when you're elsewhere.
+There's no internet-wide search for nodes: that would need a central
+directory. Share addresses and invitations instead.
 
 ## Sites
 
@@ -105,8 +132,11 @@ phone; use `mesh site publish --app`.
 - The node keeps running with the screen off, but Android may still pause
   its timers in deep sleep (Doze), slowing syncs; Bluetooth adverts and
   incoming data wake it.
-- Turning Bluetooth off and on while the node runs stops it accepting
-  links until the node is restarted.
+- A phone sharing its own hotspot doesn't count that as Wi-Fi, so the
+  sound modem may switch on there; switch it off with **Modem**.
+- Android may refuse the microphone to a background service started while
+  the app wasn't open; then the sound modem hears only while the app is
+  open.
 - The GATT pipe (for Windows and iOS peers) is written but has only been
   checked against the Android API, not run; Android-to-Android uses L2CAP.
   iOS needs its own driver.

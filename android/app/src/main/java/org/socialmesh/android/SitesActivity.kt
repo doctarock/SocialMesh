@@ -93,8 +93,8 @@ class SitesActivity : Activity() {
         list.addView(
             Ui.note(
                 this,
-                "Sites are web pages passed around like posts, with no server. They run no scripts and " +
-                    "load nothing from outside, so opening one tells no website you read it.",
+                "Sites are web pages passed around like posts, with no server. Pages run no scripts and " +
+                    "load nothing from outside; apps (marked) run code with no network and ask before sending.",
             ),
         )
         if (yours.isNotEmpty()) {

@@ -70,8 +70,15 @@ class BleDriver(context: Context, private val node: Node) {
     @Volatile internal var advertData: ByteArray? = null
     private var scanning: ScanCallback? = null
     private var commandThread: Thread? = null
+    /** What the node asked for, so it can be picked up again when Bluetooth comes back on. */
+    private var wantListen = false
+    private var wantScan = false
+    /** Bluetooth is on (as far as we know): radio work is attempted. */
+    @Volatile private var radioOn = true
 
-    fun start() {
+    /** Start taking commands from the node. [on]: Bluetooth is on now. */
+    fun start(on: Boolean) {
+        radioOn = on
         running = true
         commandThread = Thread(::commandLoop, "mesh-ble-commands").also { it.start() }
     }
@@ -90,6 +97,43 @@ class BleDriver(context: Context, private val node: Node) {
         for (l in links.values) l.close("stopped")
         reporter.shutdownNow()
         gattEvents.shutdownNow()
+    }
+
+    /**
+     * Bluetooth was turned off: drop links and servers, but remember what the
+     * node asked for. Commands keep arriving and are remembered too.
+     */
+    @Synchronized
+    fun radioOff() {
+        if (!radioOn) return
+        radioOn = false
+        advertising = null
+        scanning = null // the stack forgets both when the radio goes off
+        try {
+            l2capServer?.close()
+        } catch (e: IOException) {
+        }
+        l2capServer = null
+        gattServer?.close()
+        gattServer = null
+        listening = false
+        for (l in links.values) l.close("Bluetooth off")
+    }
+
+    /** Bluetooth is back on: listen, scan and advertise as the node last asked. */
+    @Synchronized
+    fun radioOn() {
+        if (radioOn || !running) return
+        radioOn = true
+        try {
+            if (wantListen) listen()
+            if (wantScan) startScan()
+            advertData?.let { startAdvertising(it) }
+        } catch (e: SecurityException) {
+            Log.e(TAG, "Bluetooth permission missing", e)
+        } catch (e: Exception) {
+            Log.w(TAG, "resuming failed", e)
+        }
     }
 
     // --- used by links ---
@@ -125,7 +169,8 @@ class BleDriver(context: Context, private val node: Node) {
             val bytes = node.nextRadioCommand(250) ?: continue
             val cmd = BleCodec.decodeCommand(bytes) ?: continue
             try {
-                execute(cmd)
+                // Sending can block (flow control), so it stays outside the lock.
+                if (cmd is BleCodec.Command.Send) execute(cmd) else synchronized(this) { execute(cmd) }
             } catch (e: SecurityException) {
                 Log.e(TAG, "Bluetooth permission missing", e)
             } catch (e: Exception) {
@@ -136,18 +181,28 @@ class BleDriver(context: Context, private val node: Node) {
 
     private fun execute(cmd: BleCodec.Command) {
         when (cmd) {
-            is BleCodec.Command.Listen -> listen()
+            is BleCodec.Command.Listen -> {
+                wantListen = true
+                if (radioOn) listen()
+            }
             is BleCodec.Command.Advertise -> {
                 advertData = cmd.serviceData
-                startAdvertising(cmd.serviceData)
+                if (radioOn) startAdvertising(cmd.serviceData)
             }
             is BleCodec.Command.StopAdvertising -> {
                 advertData = null
                 stopAdvertising()
             }
-            is BleCodec.Command.Scan -> startScan()
-            is BleCodec.Command.StopScan -> stopScan()
-            is BleCodec.Command.Connect -> connect(cmd)
+            is BleCodec.Command.Scan -> {
+                wantScan = true
+                if (radioOn) startScan()
+            }
+            is BleCodec.Command.StopScan -> {
+                wantScan = false
+                stopScan()
+            }
+            is BleCodec.Command.Connect ->
+                if (radioOn) connect(cmd) else event(BleCodec.connectFailed(cmd.link, "Bluetooth is off"))
             // Blocks only if this link's queue is full: flow control.
             is BleCodec.Command.Send -> links[cmd.link]?.queue?.put(cmd.data)
             is BleCodec.Command.Close -> links[cmd.link]?.close("closed by node")
@@ -156,7 +211,7 @@ class BleDriver(context: Context, private val node: Node) {
                 // private address that it rotates on its own timer). Starting a
                 // fresh advertisement is the most an app can do to move to a new one.
                 stopAdvertising()
-                advertData?.let { startAdvertising(it) }
+                if (radioOn) advertData?.let { startAdvertising(it) }
             }
         }
     }

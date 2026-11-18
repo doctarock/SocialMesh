@@ -354,6 +354,29 @@ impl Node {
         self.inner.discoveries.lock().unwrap().push(d);
     }
 
+    /// Addresses sighted recently by discovery (any medium), with the
+    /// identity they announced, if any.
+    pub fn discovered(&self) -> Vec<(String, Option<Digest>)> {
+        let now = Instant::now();
+        let ttl = self.inner.config.discovered_ttl;
+        let mut v: Vec<_> = self
+            .inner
+            .discovered
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(_, (_, seen))| now.duration_since(*seen) < ttl)
+            .map(|(a, (i, _))| (a.clone(), *i))
+            .collect();
+        v.sort_by(|a, b| a.0.cmp(&b.0));
+        v
+    }
+
+    /// Whether there's a live link to whoever answers at `addr`.
+    pub fn is_linked(&self, addr: &str) -> bool {
+        already_connected(&self.inner, addr)
+    }
+
     /// Dial an address now, optionally requiring a specific identity.
     pub fn dial(&self, addr: &str, expected: Option<Digest>) {
         spawn_dial(self.inner.clone(), addr.to_string(), expected);

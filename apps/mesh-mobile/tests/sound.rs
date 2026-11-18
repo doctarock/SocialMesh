@@ -50,3 +50,26 @@ fn a_post_crosses_from_speaker_to_microphone() {
     let again: Vec<String> = record(&pcm).iter().flat_map(|p| b.hear(p, 48_000)).collect();
     assert!(again.iter().any(|l| l == "Heard a post by sound (already here)"), "{again:?}");
 }
+
+/// Replays a real recording (SOCIALMESH_WAV, 16-bit mono) through `hear`
+/// and prints, per second, whether the modem would think someone's playing.
+#[test]
+#[ignore]
+fn busy_on_a_real_recording() {
+    let Ok(path) = std::env::var("SOCIALMESH_WAV") else { return };
+    let wav = std::fs::read(path).unwrap();
+    let rate = u32::from_le_bytes(wav[24..28].try_into().unwrap());
+    let pcm = &wav[44..];
+    let dir = tempfile::tempdir().unwrap();
+    let m = socialmesh::Mobile::start(dir.path(), socialmesh::Options { beacon: false, lan: false }).unwrap();
+    let chunk = (rate / 4) as usize * 2;
+    let mut line = String::new();
+    for (i, c) in pcm.chunks(chunk).enumerate() {
+        m.hear(c, rate);
+        line.push(if m.sound_busy() { '#' } else { '.' });
+        if i % 40 == 39 {
+            println!("{:4}s {line}", (i + 1) / 4);
+            line.clear();
+        }
+    }
+}

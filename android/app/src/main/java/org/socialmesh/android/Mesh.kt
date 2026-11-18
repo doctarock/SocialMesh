@@ -52,10 +52,15 @@ object Mesh {
             Log.w(TAG, "no multicast lock; LAN discovery may not hear others", e)
             null
         }
-        driver = BleDriver(app, radio).also { it.start() }
+        // Bluetooth is used when it's on and allowed, and picked up again when it comes on.
+        driver = BleDriver(app, radio).also { it.start(Radios.bluetoothUsable(app)) }
         watching = true
         watcher = Thread(::watch, "mesh-events").also { it.start() }
+        Modem.attach(app)
+        Radios.start(app, ::radiosChanged)
         say("Started")
+        say(radioLine())
+        Modem.evaluate()
     }
 
     /** Stop and free the node. Blocks for up to a few seconds: call it off the main thread. */
@@ -64,6 +69,8 @@ object Mesh {
         val h = handle
         if (h == 0L) return
         watching = false
+        Radios.stop()
+        Modem.shutdown()
         driver?.stop()
         driver = null
         call { Native.stop(it) }
@@ -87,6 +94,17 @@ object Mesh {
         say("Stopped")
     }
 
+    /** "Bluetooth on · Wi-Fi off", as the log and the main screen say it. */
+    fun radioLine(): String =
+        "Bluetooth ${if (Radios.bluetooth) "on" else "off"} · Wi-Fi ${if (Radios.wifi) "on" else "off"}"
+
+    private fun radiosChanged() {
+        // Off the main thread: resuming hands events to the node, which can block.
+        driver?.let { d -> Thread({ if (Radios.bluetooth) d.radioOn() else d.radioOff() }, "mesh-radio").start() }
+        say(radioLine())
+        Modem.radiosChanged()
+    }
+
     fun publish(text: String): String? = call { Native.publish(it, text) }
 
     fun feedJson(limit: Int): String? = call { Native.feedJson(it, limit) }
@@ -105,6 +123,20 @@ object Mesh {
         val lines = call { Native.hear(it, pcm, rate) } ?: return
         for (l in lines.split('\n')) say(l)
     }
+
+    /** The [nth] of the newest public posts as sound (taking turns), or null if stopped. Throws if nothing is public. */
+    fun soundOfRecent(nth: Int, fast: Boolean): ByteArray? = call { Native.soundOfRecent(it, nth, fast) }
+
+    /** Someone nearby is playing a post right now. */
+    fun soundBusy(): Boolean = call { Native.soundBusy(it) } ?: false
+
+    /** Saved hosts and hosts found on this network (JSON). */
+    fun hostsJson(): String? = call { Native.hostsJson(it) }
+
+    /** Save and connect to a host or invitation; blocks for several seconds. Throws on bad input. */
+    fun addHost(input: String): String? = call { Native.addHost(it, input) }
+
+    fun removeHost(addr: String): Boolean = call { Native.removeHost(it, addr) } ?: false
 
     fun stopHearing() {
         call { Native.stopHearing(it) }

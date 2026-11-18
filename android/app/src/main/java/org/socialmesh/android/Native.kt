@@ -59,6 +59,20 @@ object Native {
     /** One file for the viewer, packed (see SiteActivity.unpack), or null. */
     @JvmStatic external fun siteFile(handle: Long, address: String, path: String): ByteArray?
 
+    /** The `nth` of the newest public posts as sound (they take turns). */
+    @JvmStatic external fun soundOfRecent(handle: Long, nth: Int, fast: Boolean): ByteArray?
+
+    /** Someone nearby is playing a post right now. */
+    @JvmStatic external fun soundBusy(handle: Long): Boolean
+
+    /** `{saved: [{addr, id, last_seen_ms, linked}], found: [{addr, id, linked}]}`. */
+    @JvmStatic external fun hostsJson(handle: Long): String?
+
+    /** Save and connect to a host (`host[:port]` or a `mesh1:` invitation). Returns what happened. */
+    @JvmStatic external fun addHost(handle: Long, input: String): String?
+
+    @JvmStatic external fun removeHost(handle: Long, addr: String): Boolean
+
     /** `{title, address, version}` for an app's code. */
     @JvmStatic external fun appInfo(handle: Long, address: String): String?
 

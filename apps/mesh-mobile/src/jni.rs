@@ -425,3 +425,77 @@ pub extern "system" fn Java_org_socialmesh_android_Native_appSubmit(
     let r = m.app_submit(&address, &data, anonymous != JNI_FALSE);
     string_or_throw(&mut env, r)
 }
+
+// ---- sound modem -------------------------------------------------------------
+
+/// The `nth` of the newest public posts as sound (see `Mobile::sound_of_recent`).
+#[no_mangle]
+pub extern "system" fn Java_org_socialmesh_android_Native_soundOfRecent(
+    mut env: JNIEnv,
+    _: JClass,
+    handle: jlong,
+    nth: jint,
+    fast: jboolean,
+) -> jbyteArray {
+    let Some(m) = mobile(handle) else { return std::ptr::null_mut() };
+    match m.sound_of_recent(nth.max(0) as usize, fast != JNI_FALSE) {
+        Ok(pcm) => env.byte_array_from_slice(&pcm).map(|a| a.into_raw()).unwrap_or(std::ptr::null_mut()),
+        Err(e) => {
+            throw(&mut env, format!("{e:#}"));
+            std::ptr::null_mut()
+        }
+    }
+}
+
+/// Someone nearby is playing a post right now.
+#[no_mangle]
+pub extern "system" fn Java_org_socialmesh_android_Native_soundBusy(_: JNIEnv, _: JClass, handle: jlong) -> jboolean {
+    match mobile(handle) {
+        Some(m) if m.sound_busy() => JNI_TRUE,
+        _ => JNI_FALSE,
+    }
+}
+
+// ---- hosts ---------------------------------------------------------------------
+
+/// Saved and found hosts (JSON, see `Mobile::hosts_json`).
+#[no_mangle]
+pub extern "system" fn Java_org_socialmesh_android_Native_hostsJson(mut env: JNIEnv, _: JClass, handle: jlong) -> jstring {
+    let Some(m) = mobile(handle) else { return std::ptr::null_mut() };
+    let r = m.hosts_json();
+    string_or_throw(&mut env, r)
+}
+
+/// Save and connect to a host (address or invitation). Blocks for up to
+/// several seconds while it tries the address.
+#[no_mangle]
+pub extern "system" fn Java_org_socialmesh_android_Native_addHost(
+    mut env: JNIEnv,
+    _: JClass,
+    handle: jlong,
+    input: JString,
+) -> jstring {
+    let Some(m) = mobile(handle) else { return std::ptr::null_mut() };
+    let Some(input) = jstr(&mut env, &input) else { return std::ptr::null_mut() };
+    let r = m.add_host(&input);
+    string_or_throw(&mut env, r)
+}
+
+#[no_mangle]
+pub extern "system" fn Java_org_socialmesh_android_Native_removeHost(
+    mut env: JNIEnv,
+    _: JClass,
+    handle: jlong,
+    addr: JString,
+) -> jboolean {
+    let Some(m) = mobile(handle) else { return JNI_FALSE };
+    let Some(addr) = jstr(&mut env, &addr) else { return JNI_FALSE };
+    match m.remove_host(&addr) {
+        Ok(true) => JNI_TRUE,
+        Ok(false) => JNI_FALSE,
+        Err(e) => {
+            throw(&mut env, format!("{e:#}"));
+            JNI_FALSE
+        }
+    }
+}

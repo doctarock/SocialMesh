@@ -13,6 +13,16 @@
 - Android: apps open in the phone's viewer, each site on its own origin,
   and the phone asks before an app sends anything (anonymously, as you,
   or not at all).
+- Android: Bluetooth is no longer required. The app starts with whatever is
+  there and picks Bluetooth up when it's turned on (previously, turning
+  Bluetooth off and on stopped it accepting links until a restart).
+- Android: **sound modem**. With no Bluetooth and no Wi-Fi, the phone listens
+  and takes turns playing its newest public posts every minute or so. It
+  listens before talking, including for tones too faint to decode, and
+  warns when the media volume is too low to be heard.
+- Android: **Hosts**. Add a node by address or `mesh1:` invitation; it's
+  pinned to the node that answered and kept in sync over any network. Nodes
+  announcing themselves on the local Wi-Fi are listed and can be saved.
 - **Security fix:** a site's `<iframe>` made the browser look up the
   frame's address in DNS before its policy refused the frame, telling a
   site author when someone opened the page. Frames and embedded objects

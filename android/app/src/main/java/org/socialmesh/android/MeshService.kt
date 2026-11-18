@@ -9,6 +9,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.graphics.drawable.Icon
+import android.os.Build
 import android.os.IBinder
 import android.util.Log
 
@@ -21,7 +22,9 @@ class MeshService : Service() {
     private var started = false
 
     private val linkWatcher = Mesh.Listener { line ->
-        if (line.startsWith("Connected") || line.startsWith("Disconnected") || line == "Started") showLinks()
+        if (line.startsWith("Connected") || line.startsWith("Disconnected") || line == "Started" || line.startsWith("Sound modem")) {
+            showLinks()
+        }
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
@@ -38,8 +41,20 @@ class MeshService : Service() {
             stopSelf()
             return START_NOT_STICKY
         }
+        if (intent?.action == ACTION_REFRESH) {
+            if (!started) {
+                stopSelf() // nothing running to refresh
+                return START_NOT_STICKY
+            }
+            try {
+                goForeground(statusText())
+            } catch (e: RuntimeException) {
+                Log.w(TAG, "can't refresh", e)
+            }
+            return START_STICKY
+        }
         try {
-            startForeground(NOTIFICATION_ID, notification("Starting…"), ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE)
+            goForeground("Starting…")
         } catch (e: RuntimeException) {
             // Not allowed right now (started from the background, or a permission was revoked).
             Log.w(TAG, "can't run in the foreground", e)
@@ -68,14 +83,37 @@ class MeshService : Service() {
         super.onDestroy()
     }
 
-    private fun showLinks() {
+    /**
+     * Run in the foreground, with the microphone too while the sound modem is
+     * on (so it keeps listening with the screen off). Android may refuse the
+     * microphone from the background; then the modem works while the app is
+     * open.
+     */
+    private fun goForeground(text: String) {
+        val base = ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE
+        if (Modem.on && Modem.micAllowed(this) && Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            try {
+                startForeground(NOTIFICATION_ID, notification(text), base or ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE)
+                return
+            } catch (e: RuntimeException) {
+                Log.w(TAG, "microphone not allowed in the background now", e)
+            }
+        }
+        startForeground(NOTIFICATION_ID, notification(text), base)
+    }
+
+    private fun statusText(): String {
         val n = Mesh.links()?.lines()?.count { it.isNotBlank() } ?: 0
-        val text = when (n) {
+        val links = when (n) {
             0 -> "Looking for people nearby"
             1 -> "Linked with 1 node"
             else -> "Linked with $n nodes"
         }
-        getSystemService(NotificationManager::class.java).notify(NOTIFICATION_ID, notification(text))
+        return if (Modem.on) "$links · sound modem on" else links
+    }
+
+    private fun showLinks() {
+        getSystemService(NotificationManager::class.java).notify(NOTIFICATION_ID, notification(statusText()))
     }
 
     private fun notification(text: String): Notification {
@@ -102,9 +140,13 @@ class MeshService : Service() {
         private const val CHANNEL = "running"
         private const val NOTIFICATION_ID = 1
         private const val ACTION_STOP = "org.socialmesh.android.STOP"
+        private const val ACTION_REFRESH = "org.socialmesh.android.REFRESH"
 
         fun startIntent(context: Context) = Intent(context, MeshService::class.java)
 
         fun stopIntent(context: Context) = Intent(context, MeshService::class.java).setAction(ACTION_STOP)
+
+        /** Update the notification and what the service runs as (the sound modem changed). */
+        fun refreshIntent(context: Context) = Intent(context, MeshService::class.java).setAction(ACTION_REFRESH)
     }
 }
