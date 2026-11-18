@@ -114,7 +114,7 @@ class SitesActivity : Activity() {
         val title = s.getString("title")
         val address = s.getString("address")
         val state = if (have < files) "$have of $files files here" else "$files files"
-        val kind = when {
+        val kind = (if (s.optBoolean("app")) " · app" else "") + when {
             s.getBoolean("ownerless") -> " · anonymous"
             yours -> " · yours"
             else -> ""

@@ -110,4 +110,48 @@ fn a_site_is_listed_and_served_safely() {
         assert_eq!(m.site_file(&address, bad).unwrap().status, 404, "{bad}");
     }
     assert!(m.site_file("site:00", "index.html").is_err(), "unknown site");
+    assert_eq!(m.site_file(&address, ".socialmesh/host.js").unwrap().status, 404, "plain sites have no host");
+}
+
+#[test]
+fn an_app_runs_through_the_phone_viewer_and_takes_entries() {
+    let dir = tempfile::tempdir().unwrap();
+    let key = Keypair::generate();
+    {
+        let store = Store::open(dir.path()).unwrap();
+        let files = vec![
+            NewFile {
+                path: "index.html".into(),
+                media_type: "text/html".into(),
+                data: b"<head><title>Poll</title></head><div data-socialmesh-app></div><iframe src=//t.example>".to_vec(),
+            },
+            NewFile { path: "poll.js".into(), media_type: "text/javascript".into(), data: b"socialmesh.render('hi')".to_vec() },
+        ];
+        let c = mesh_site::build_app(&store, files, "Poll", "index.html", Some("poll.js"), None, BlobSource::Own).unwrap();
+        store.put(&create(c, Author::Signed(&key)).unwrap(), &Origin::Local).unwrap();
+    }
+    let m = Mobile::start(dir.path(), Options { beacon: false, lan: false }).unwrap();
+    let address = format!("site:{}", key.public().id().to_hex());
+    assert!(m.sites_json().unwrap().contains(r#""app":true"#));
+
+    let page = m.site_file(&address, "index.html").unwrap();
+    let body = String::from_utf8(page.data).unwrap();
+    let nonce = body.split("nonce=\"").nth(1).unwrap().split('"').next().unwrap();
+    let csp = &page.headers.iter().find(|(k, _)| *k == "Content-Security-Policy").unwrap().1;
+    assert!(csp.contains(&format!("script-src 'nonce-{nonce}';")), "{csp}");
+    assert!(body.contains("<xframe"), "frames are neutralised: {body}");
+    let script = m.site_file(&address, "poll.js").unwrap();
+    assert!(script.headers.iter().any(|(k, v)| *k == "Content-Security-Policy" && v.starts_with("default-src 'none'; script-src 'self'")));
+    assert!(String::from_utf8(m.site_file(&address, ".socialmesh/worker.js").unwrap().data).unwrap().contains("importScripts"));
+    assert!(m.app_info(&address).unwrap().contains(r#""title":"Poll""#));
+
+    assert_eq!(m.app_entries(&address).unwrap(), "[]");
+    let anon = m.app_submit(&address, r#"{"vote":"yes"}"#, true).unwrap();
+    let signed = m.app_submit(&address, r#"{"vote":"no"}"#, false).unwrap();
+    let entries = m.app_entries(&address).unwrap();
+    assert!(entries.contains(&anon) && entries.contains(&signed), "{entries}");
+    assert_eq!(entries.matches(r#""mine":true"#).count(), 2, "{entries}");
+    let anon_id = m.app_anonymous_id(&address).unwrap();
+    assert!(entries.contains(&format!(r#""author":"{anon_id}""#)), "anonymous entry signed by the per-app key: {entries}");
+    assert!(m.app_submit(&address, &"x".repeat(20_000), true).is_err(), "size limit");
 }

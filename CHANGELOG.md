@@ -10,6 +10,9 @@
   and the app, sent by the private route. Every send is confirmed first.
   `mesh site publish --app <script>`, `mesh site entries`; the desktop
   viewer asks in the terminal. Example: `examples/poll`.
+- Android: apps open in the phone's viewer, each site on its own origin,
+  and the phone asks before an app sends anything (anonymously, as you,
+  or not at all).
 - **Security fix:** a site's `<iframe>` made the browser look up the
   frame's address in DNS before its policy refused the frame, telling a
   site author when someone opened the page. Frames and embedded objects

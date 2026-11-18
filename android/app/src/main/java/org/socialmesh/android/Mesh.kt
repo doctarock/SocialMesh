@@ -125,6 +125,15 @@ object Mesh {
 
     fun mySitesJson(): String? = call { Native.mySitesJson(it) }
 
+    fun appInfo(address: String): String? = call { Native.appInfo(it, address) }
+
+    fun appEntries(address: String): String? = call { Native.appEntries(it, address) }
+
+    fun appAnonymousId(address: String): String? = call { Native.appAnonymousId(it, address) }
+
+    fun appSubmit(address: String, data: String, anonymous: Boolean): String? =
+        call { Native.appSubmit(it, address, data, anonymous) }
+
     fun publishSite(key: String?, ownerless: Boolean, title: String, index: String, files: ByteArray, keepMetadata: Boolean): String? =
         call { Native.publishSite(it, key, ownerless, title, index, files, keepMetadata) }
 

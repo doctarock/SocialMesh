@@ -13,6 +13,7 @@ import android.view.MenuItem
 import android.view.ViewGroup.LayoutParams.MATCH_PARENT
 import android.view.ViewGroup.LayoutParams.WRAP_CONTENT
 import android.webkit.CookieManager
+import android.webkit.JavascriptInterface
 import android.webkit.WebResourceRequest
 import android.webkit.WebResourceResponse
 import android.webkit.WebView
@@ -21,6 +22,7 @@ import android.widget.LinearLayout
 import android.widget.TextView
 import android.widget.Toast
 import org.json.JSONArray
+import org.json.JSONObject
 import java.io.ByteArrayInputStream
 import java.nio.ByteBuffer
 import java.nio.charset.StandardCharsets
@@ -40,6 +42,10 @@ class SiteActivity : Activity() {
     private var index = "index.html"
     private var complete = false
     private var waitingForFiles = false
+    private var isApp = false
+    private var asking = false
+    /** Each site has its own origin, so apps can't read each other's storage. */
+    private var host = "site.socialmesh.invalid"
     private val handler = Handler(Looper.getMainLooper())
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -47,6 +53,9 @@ class SiteActivity : Activity() {
         address = intent.getStringExtra(EXTRA_ADDRESS) ?: return finish()
         siteTitle = intent.getStringExtra(EXTRA_TITLE) ?: "Site"
         title = siteTitle
+        val hex = address.removePrefix("site:")
+        if (hex.length >= 18) host = "s${hex.substring(2, 18)}.socialmesh.invalid"
+        isApp = siteInfo()?.optBoolean("app") == true
         actionBar?.setDisplayHomeAsUpEnabled(true)
         crumbs = Crumbs.view(this)
         status = Ui.note(this, "").apply {
@@ -65,6 +74,14 @@ class SiteActivity : Activity() {
             settings.safeBrowsingEnabled = false // no URL lookups sent to Google
             settings.builtInZoomControls = true
             settings.displayZoomControls = false
+            if (isApp) {
+                // Only SocialMesh's host script can run in the page (the page's policy allows it
+                // alone); the app's own code runs in a worker with no network (SPEC.md §11.2).
+                @Suppress("SetJavaScriptEnabled")
+                settings.javaScriptEnabled = true
+                settings.domStorageEnabled = true
+                addJavascriptInterface(Bridge(), "SocialMeshNative")
+            }
             webViewClient = Client()
             setDownloadListener { _, _, _, _, _ -> } // downloads are not offered from sites yet
         }
@@ -93,7 +110,7 @@ class SiteActivity : Activity() {
         watchProgress()
     }
 
-    private fun url(path: String) = "https://$HOST/$path"
+    private fun url(path: String) = "https://$host/$path"
 
     /** `SocialMesh › Sites › <site> › <page>`; the page crumb is left out on the first page. */
     private fun showCrumbs(page: String?) {
@@ -113,11 +130,12 @@ class SiteActivity : Activity() {
             status.text = "SocialMesh is stopped: pages already here still show."
         } else {
             val (have, all) = p
-            status.text = if (have < all) {
-                "$have of $all files here, fetching the rest from nearby. Scripts off; nothing loads from outside."
+            val rules = if (isApp) {
+                "App: its code has no network, and it asks before sending anything."
             } else {
                 "Scripts off; nothing loads from outside this site."
             }
+            status.text = if (have < all) "$have of $all files here, fetching the rest from nearby. $rules" else rules
             if (have == all && !complete) {
                 if (have > 0 && waitingForFiles) web.reload()
                 complete = true
@@ -145,24 +163,32 @@ class SiteActivity : Activity() {
         return true
     }
 
+    private fun siteInfo(): JSONObject? = try {
+        Mesh.sitesJson()?.let { j -> JSONArray(j).let { a -> (0 until a.length()).map { a.getJSONObject(it) } } }
+            ?.firstOrNull { it.getString("address") == address }
+    } catch (e: RuntimeException) {
+        null
+    }
+
     private fun about() {
-        val s = try {
-            Mesh.sitesJson()?.let { j -> JSONArray(j).let { a -> (0 until a.length()).map { a.getJSONObject(it) } } }
-                ?.firstOrNull { it.getString("address") == address }
-        } catch (e: RuntimeException) {
-            null
-        } ?: return
+        val s = siteInfo() ?: return
         val who = if (s.getBoolean("ownerless")) {
             "Anonymous: published with no key, so it can never be updated or withdrawn."
         } else {
             "Signed by its own site key: only whoever holds that key can publish new versions. " +
                 "The title proves nothing; the address is the site."
         }
+        val app = if (isApp) {
+            "\n\nThis is an app. Its code runs with no network: it can read its own files and what " +
+                "people have sent it, and it asks you before sending anything."
+        } else {
+            ""
+        }
         AlertDialog.Builder(this)
             .setTitle(s.getString("title"))
             .setMessage(
                 "Version ${s.getInt("version")} · ${s.getInt("files")} files · ${Ui.size(s.getLong("size"))}\n\n" +
-                    "$who\n\nAddress:\n$address",
+                    "$who$app\n\nAddress:\n$address",
             )
             .setPositiveButton("Copy address") { _, _ -> Ui.copy(this, "Site address", address) }
             .setNegativeButton("Close", null)
@@ -183,7 +209,7 @@ class SiteActivity : Activity() {
     private inner class Client : WebViewClient() {
         override fun shouldInterceptRequest(view: WebView, request: WebResourceRequest): WebResourceResponse {
             val url = request.url
-            if (url.scheme != "https" || url.host != HOST) return blocked()
+            if (url.scheme != "https" || url.host != host) return blocked()
             val path = (url.encodedPath ?: "/").removePrefix("/")
             val packed = Mesh.siteFile(address, path) ?: return blocked()
             return unpack(packed)
@@ -191,7 +217,7 @@ class SiteActivity : Activity() {
 
         override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {
             val url = request.url
-            if (url.scheme == "https" && url.host == HOST) return false
+            if (url.scheme == "https" && url.host == host) return false
             if (url.scheme in setOf("http", "https", "mailto")) {
                 confirmLeaving(url)
             } else {
@@ -206,10 +232,88 @@ class SiteActivity : Activity() {
                 showCrumbs(null)
             } else {
                 // The page's own <title> if it has one, otherwise its file name.
-                val t = view.title?.takeIf { it.isNotBlank() && !it.startsWith(HOST) && !it.startsWith("https://") }
+                val t = view.title?.takeIf { it.isNotBlank() && !it.startsWith(host) && !it.startsWith("https://") }
                 showCrumbs(t ?: path.substringAfterLast('/'))
             }
         }
+    }
+
+    /**
+     * What the app's host script may ask of the phone (SPEC.md §11.3). Called on a
+     * WebView thread; anything that shows UI goes to the main thread.
+     */
+    private inner class Bridge {
+        @JavascriptInterface
+        fun app(): String = Mesh.appInfo(address) ?: "{}"
+
+        @JavascriptInterface
+        fun entries(): String = try {
+            Mesh.appEntries(address) ?: "[]"
+        } catch (e: RuntimeException) {
+            "[]"
+        }
+
+        @JavascriptInterface
+        fun submit(id: Int, data: String, summary: String) {
+            runOnUiThread { confirmSubmit(id, data, summary) }
+        }
+    }
+
+    private fun finishSubmit(id: Int, ok: Boolean, value: String) {
+        val r = JSONObject().put("ok", ok).put(if (ok) "id" else "error", value)
+        web.evaluateJavascript("window.__socialmeshDone && window.__socialmeshDone($id, ${JSONObject.quote(r.toString())})", null)
+    }
+
+    /** Ask before an app sends anything; one question at a time. */
+    private fun confirmSubmit(id: Int, data: String, summary: String) {
+        if (asking || isFinishing) return finishSubmit(id, false, "declined")
+        asking = true
+        val anonId = try {
+            Mesh.appAnonymousId(address)
+        } catch (e: RuntimeException) {
+            null
+        }
+        val you = Mesh.ids()?.split(" ")?.getOrNull(0)
+        val shown = if (data.length > 1500) data.take(1500) + "…" else data
+        val says = if (summary.isBlank()) "" else "It says: $summary\n\n"
+        var answered = false
+        fun send(anonymous: Boolean) {
+            answered = true
+            Thread {
+                val result = try {
+                    Result.success(Mesh.appSubmit(address, data, anonymous) ?: throw RuntimeException("SocialMesh is stopped"))
+                } catch (e: RuntimeException) {
+                    Result.failure(e)
+                }
+                runOnUiThread {
+                    asking = false
+                    result.onSuccess {
+                        finishSubmit(id, true, it)
+                        Toast.makeText(this, if (anonymous) "Sent anonymously" else "Sent as you", Toast.LENGTH_SHORT).show()
+                    }
+                    result.onFailure { finishSubmit(id, false, it.message ?: "failed") }
+                }
+            }.start()
+        }
+        AlertDialog.Builder(this)
+            .setTitle("Send to $siteTitle?")
+            .setMessage(
+                says + "Exactly what will be sent:\n$shown\n\n" +
+                    "Everyone who has this app can read it. Anonymously, it's signed by a key used only " +
+                    "for this app (${anonId ?: "…"}), not linked to you. As you, it's signed as " +
+                    "${you ?: "your ID"}.",
+            )
+            // Short labels, so all three fit on one row even in landscape.
+            .setPositiveButton("Anonymously") { _, _ -> send(true) }
+            .setNeutralButton("As you") { _, _ -> send(false) }
+            .setNegativeButton("Don't send", null)
+            .setOnDismissListener {
+                if (!answered) {
+                    asking = false
+                    finishSubmit(id, false, "declined")
+                }
+            }
+            .show()
     }
 
     private fun confirmLeaving(url: Uri) {
@@ -237,8 +341,6 @@ class SiteActivity : Activity() {
         private const val MENU_ABOUT = 2
         private const val MENU_COPY = 3
 
-        /** Pages appear to come from here; it never resolves (.invalid), and every request is answered locally. */
-        private const val HOST = "site.socialmesh.invalid"
 
         private fun blocked() =
             WebResourceResponse("text/plain", null, 403, "Blocked", emptyMap(), ByteArrayInputStream(ByteArray(0)))
