@@ -3,7 +3,7 @@ A decentralized messaging and social network protocol
 
 > **Experimental proof of concept, not independently security-reviewed.** Keys are stored unencrypted on disk. Don't rely on it where your safety depends on it.
 >
-> **Status:** v0.2 reference implementation in Rust (MIT). All six milestones work, including attachments (sealed, fetched from several peers at once, verified per chunk; anonymous files travel the anonymity route). Phones sync over Bluetooth and Wi-Fi, posts can travel as sound, and sites (web pages with no server) pass around like posts. Changes: [CHANGELOG.md](CHANGELOG.md).
+> **Status:** v0.3 reference implementation in Rust (MIT). All six milestones work, including attachments (sealed, fetched from several peers at once, verified per chunk; anonymous files travel the anonymity route). Phones sync over Bluetooth, Wi-Fi and saved hosts, and fall back to sound when there's neither radio; sites (web pages with no server) pass around like posts, and apps (polls, petitions) run on them with no network. Changes: [CHANGELOG.md](CHANGELOG.md).
 > Anonymous posts use stem/fluff routing so peers cannot tell who wrote them: [docs/ORIGIN-PRIVACY.md](docs/ORIGIN-PRIVACY.md).
 > All peer connections are encrypted (Noise, forward-secret); link observers still see who you connect to and when.
 > Not yet safe against state-level surveillance. Read [THREAT-MODEL.md](THREAT-MODEL.md).

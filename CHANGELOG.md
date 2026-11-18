@@ -1,6 +1,10 @@
 # Changelog
 
-## Unreleased
+## 0.3.0 (2026-11-18)
+
+Apps: sites with code that runs with no network, and phones that work
+without Bluetooth. Still an **experimental proof of concept, not
+independently security-reviewed**.
 
 - **Apps** (SPEC.md §11): sites with code (polls, petitions, sign-ups).
   App code runs in a web worker with no network at all: the page runs
