@@ -1,7 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
-    <uses-feature android:name="android.hardware.bluetooth_le" android:required="true" />
+    <!-- Bluetooth is used when there, not required: Wi-Fi, hosts and sound work without it. -->
+    <uses-feature android:name="android.hardware.bluetooth_le" android:required="false" />
+    <uses-feature android:name="android.hardware.microphone" android:required="false" />
 
     <!-- Android 12+: scanning is declared as not used for location. -->
     <uses-permission android:name="android.permission.BLUETOOTH_SCAN"
@@ -18,9 +20,12 @@
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
     <uses-permission android:name="android.permission.CHANGE_WIFI_MULTICAST_STATE" />
+    <!-- Knowing whether there's Wi-Fi (no Wi-Fi and no Bluetooth: the sound modem). -->
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
 
-    <!-- Hearing posts played as sound (only while the app is on screen). -->
+    <!-- Hearing posts played as sound: while the app is on screen, or while the sound modem is on. -->
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
 
     <!-- Running in the background (MeshService), with its notification. -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
@@ -46,6 +51,10 @@
         </activity>
         <activity android:name=".SitesActivity" android:exported="false" />
         <activity
+            android:name=".HostsActivity"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboardHidden"
+            android:exported="false" />
+        <activity
             android:name=".PublishSiteActivity"
             android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboardHidden"
             android:exported="false" />
@@ -56,6 +65,6 @@
         <service
             android:name=".MeshService"
             android:exported="false"
-            android:foregroundServiceType="connectedDevice" />
+            android:foregroundServiceType="connectedDevice|microphone" />
     </application>
 </manifest>

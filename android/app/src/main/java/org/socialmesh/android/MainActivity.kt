@@ -40,15 +40,12 @@ class MainActivity : Activity() {
     private lateinit var feed: LinearLayout
     private lateinit var log: TextView
     private lateinit var logToggle: TextView
+    private lateinit var radios: TextView
     private lateinit var play: Button
     private lateinit var listen: Button
-
-    /** Only while this screen is visible: the microphone is never on in the background. */
-    private val mic by lazy {
-        // Debug builds keep the last two minutes heard, to find out why a post wasn't decoded.
-        val debuggable = applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE != 0
-        Microphone(if (debuggable) File(filesDir, "last-heard.wav") else null) { pcm, rate -> Mesh.hear(pcm, rate) }
-    }
+    private lateinit var modem: Button
+    /** Asked for the microphone for the sound modem once on this screen: don't nag. */
+    private var askedModemMic = false
 
     private val listener = Mesh.Listener { line -> runOnUiThread { onLine(line) } }
 
@@ -59,8 +56,10 @@ class MainActivity : Activity() {
         // You, and who you're linked with.
         who = Ui.text(this, "", 17f, bold = true)
         linked = Ui.note(this, "")
+        radios = Ui.note(this, "")
         toggle = Button(this).apply { setOnClickListener { toggleNode() } }
-        val status = Ui.card(this).apply {
+        // Tapping the status offers to turn Bluetooth on, if it's off.
+        val status = Ui.card(this, onClick = { offerBluetooth() }).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
             addView(
@@ -68,6 +67,7 @@ class MainActivity : Activity() {
                     orientation = LinearLayout.VERTICAL
                     addView(who)
                     addView(linked)
+                    addView(radios)
                 },
                 LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f),
             )
@@ -110,6 +110,14 @@ class MainActivity : Activity() {
             text = "Sites"
             setOnClickListener { startActivity(Intent(this@MainActivity, SitesActivity::class.java)) }
         }
+        val hosts = Button(this).apply {
+            text = "Hosts"
+            setOnClickListener { startActivity(Intent(this@MainActivity, HostsActivity::class.java)) }
+        }
+        column.addView(Ui.row(this, sites, hosts))
+
+        // Sound: one post now, listening while this screen shows, or the modem.
+        column.addView(Ui.heading(this, "Sound"))
         play = Button(this).apply {
             text = PLAY
             setOnClickListener { playNewest() }
@@ -118,7 +126,8 @@ class MainActivity : Activity() {
             text = LISTEN
             setOnClickListener { toggleListening() }
         }
-        column.addView(Ui.row(this, sites, play, listen))
+        modem = Button(this).apply { setOnClickListener { toggleModem() } }
+        column.addView(Ui.row(this, play, listen, modem))
 
         // Posts.
         column.addView(Ui.heading(this, "Posts"))
@@ -147,7 +156,9 @@ class MainActivity : Activity() {
         super.onStart()
         Mesh.addListener(listener)
         log.text = Mesh.recentLines().asReversed().joinToString("\n")
+        Radios.update()
         showState()
+        maybeAskModemMic()
     }
 
     override fun onStop() {
@@ -182,7 +193,7 @@ class MainActivity : Activity() {
         say("Playing for about $seconds seconds. Turn the volume up and hold it near the other phone.")
         play.text = "Playing…"
         play.isEnabled = false
-        Speaker.play(pcm) {
+        Modem.play(pcm) {
             runOnUiThread {
                 play.text = PLAY
                 play.isEnabled = true
@@ -191,7 +202,7 @@ class MainActivity : Activity() {
     }
 
     private fun toggleListening() {
-        if (mic.isOn) {
+        if (listen.text != LISTEN) {
             stopListening()
         } else if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
             requestPermissions(arrayOf(Manifest.permission.RECORD_AUDIO), REQ_MIC)
@@ -205,20 +216,70 @@ class MainActivity : Activity() {
             say("Start SocialMesh to listen.")
             return
         }
-        if (mic.start()) {
+        if (Modem.setScreenListening(this, true)) {
             listen.text = "Stop"
             Mesh.report("Listening for posts by sound")
             say("Listening. Posts played nearby will appear in the feed.")
+            showLinks()
         } else {
             say("Couldn't open the microphone.")
         }
     }
 
     private fun stopListening() {
-        if (!mic.isOn) return
-        mic.stop()
-        Mesh.stopHearing()
+        if (listen.text == LISTEN) return
+        Modem.setScreenListening(this, false)
         listen.text = LISTEN
+        showLinks()
+    }
+
+    private fun toggleModem() {
+        if (!Mesh.running) {
+            say("Start SocialMesh first.")
+            return
+        }
+        if (!Modem.on && !Modem.micAllowed(this)) {
+            requestPermissions(arrayOf(Manifest.permission.RECORD_AUDIO), REQ_MODEM_MIC)
+            return
+        }
+        if (!Modem.on) {
+            say("Sound modem on: this phone listens, and plays its newest posts every minute or so.")
+        }
+        Modem.toggle()
+    }
+
+    /** No Bluetooth or Wi-Fi: the modem wants the microphone. Ask once per visit. */
+    private fun maybeAskModemMic() {
+        if (!Mesh.running || !Modem.wanted || Modem.micAllowed(this) || askedModemMic) return
+        askedModemMic = true
+        AlertDialog.Builder(this)
+            .setTitle("No Bluetooth or Wi-Fi")
+            .setMessage(
+                "SocialMesh can still pass posts on by sound: this phone listens, and every minute or so plays " +
+                    "its newest public posts as tones for phones nearby. That needs the microphone.",
+            )
+            .setPositiveButton("Allow microphone") { _, _ ->
+                requestPermissions(arrayOf(Manifest.permission.RECORD_AUDIO), REQ_MODEM_MIC)
+            }
+            .setNegativeButton("Not now", null)
+            .show()
+    }
+
+    /** Offer to turn Bluetooth on (it's never forced). */
+    @Suppress("MissingPermission")
+    private fun offerBluetooth() {
+        if (!Mesh.running || Radios.bluetooth) return
+        val adapter = getSystemService(BluetoothManager::class.java)?.adapter
+        when {
+            adapter == null -> say("This phone has no Bluetooth.")
+            !Radios.bluetoothAllowed(this) -> requestPermissions(neededPermissions().toTypedArray(), REQ_PERMISSIONS)
+            else -> try {
+                @Suppress("DEPRECATION")
+                startActivityForResult(Intent(BluetoothAdapter.ACTION_REQUEST_ENABLE), REQ_ENABLE)
+            } catch (e: RuntimeException) {
+                say("Turn Bluetooth on in Settings.")
+            }
+        }
     }
 
     // ---- starting and stopping ---------------------------------------------------
@@ -253,11 +314,19 @@ class MainActivity : Activity() {
         // Optional: without it the node still runs, but its notification is hidden.
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) wanted += Manifest.permission.POST_NOTIFICATIONS
         val missing = wanted.filter { checkSelfPermission(it) != PackageManager.PERMISSION_GRANTED }
-        if (missing.isEmpty()) ensureBluetoothOn() else requestPermissions(missing.toTypedArray(), REQ_PERMISSIONS)
+        if (missing.isEmpty()) startNode() else requestPermissions(missing.toTypedArray(), REQ_PERMISSIONS)
     }
 
     override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, results: IntArray) {
         super.onRequestPermissionsResult(requestCode, permissions, results)
+        if (requestCode == REQ_MODEM_MIC) {
+            if (Modem.micAllowed(this)) {
+                if (Modem.needed) Modem.evaluate() else Modem.toggle()
+            } else {
+                say("Without the microphone, the sound modem can't hear posts.")
+            }
+            return
+        }
         if (requestCode == REQ_MIC) {
             if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
                 startListening()
@@ -267,36 +336,19 @@ class MainActivity : Activity() {
             return
         }
         if (requestCode != REQ_PERMISSIONS) return
-        if (neededPermissions().all { checkSelfPermission(it) == PackageManager.PERMISSION_GRANTED }) {
-            ensureBluetoothOn()
-        } else {
-            linked.text = "Bluetooth permission is needed to find people nearby."
-        }
-    }
-
-    @Suppress("MissingPermission")
-    private fun ensureBluetoothOn() {
-        val adapter = getSystemService(BluetoothManager::class.java).adapter
-        if (adapter == null) {
-            linked.text = "This device has no Bluetooth."
-        } else if (!adapter.isEnabled) {
-            @Suppress("DEPRECATION")
-            startActivityForResult(Intent(BluetoothAdapter.ACTION_REQUEST_ENABLE), REQ_ENABLE)
-        } else {
-            startNode()
-        }
+        // Without Bluetooth the node still runs: Wi-Fi, hosts and sound work without it.
+        if (Mesh.running) Radios.update() else startNode()
     }
 
     @Deprecated("Deprecated in Java")
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         @Suppress("DEPRECATION")
         super.onActivityResult(requestCode, resultCode, data)
-        if (requestCode == REQ_ENABLE) {
-            if (resultCode == RESULT_OK) startNode() else linked.text = "Bluetooth is off, so people nearby can't find you."
-        }
+        if (requestCode == REQ_ENABLE) Radios.update()
     }
 
     private fun startNode() {
+        if (Mesh.running) return
         linked.text = "Starting…"
         startForegroundService(MeshService.startIntent(this))
     }
@@ -310,6 +362,10 @@ class MainActivity : Activity() {
             line.startsWith("New post") -> refreshFeed()
             line.startsWith("New link key") -> showState()
             line.startsWith("Connected") || line.startsWith("Disconnected") -> showLinks()
+            line.startsWith("Bluetooth ") || line.startsWith("Sound modem") || line.startsWith("Media volume") -> {
+                showLinks()
+                maybeAskModemMic()
+            }
         }
         if (line.startsWith("Could not start")) say(line)
     }
@@ -323,7 +379,9 @@ class MainActivity : Activity() {
         } else {
             who.text = "SocialMesh is off"
             linked.text = "Nothing is sent or received."
+            radios.text = ""
             toggle.text = "Start"
+            modem.text = "Modem"
         }
         refreshFeed()
     }
@@ -339,6 +397,17 @@ class MainActivity : Activity() {
             1 -> "Linked with 1 nearby · ${media.joinToString(", ")}"
             else -> "Linked with $peers nearby · ${media.joinToString(", ")}"
         }
+        val sound = when {
+            Modem.on && Modem.tooQuiet(this) -> " · sound modem on, volume low"
+            Modem.on -> " · sound modem on"
+            Modem.listening -> " · listening"
+            else -> ""
+        }
+        radios.text = when {
+            Radios.bluetooth || Modem.on -> Mesh.radioLine() + sound
+            else -> "${Mesh.radioLine()}$sound (tap to turn Bluetooth on)"
+        }
+        modem.text = if (Modem.on) "Modem: on" else "Modem: off"
     }
 
     private fun publish() {
@@ -392,6 +461,7 @@ class MainActivity : Activity() {
         private const val REQ_PERMISSIONS = 1
         private const val REQ_ENABLE = 2
         private const val REQ_MIC = 3
+        private const val REQ_MODEM_MIC = 4
         private const val PLAY = "Play"
         private const val LISTEN = "Listen"
     }

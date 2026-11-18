@@ -24,6 +24,7 @@ use std::time::Duration;
 use tokio::sync::{broadcast, mpsc};
 
 pub mod jni;
+mod hosts;
 mod site;
 mod site_publish;
 mod sound;
